@@ -6,6 +6,13 @@ use vulkano::{
     device::{QueueFlags, Device, DeviceCreateInfo, QueueCreateInfo},
     memory::allocator::{StandardMemoryAllocator, AllocationCreateInfo, MemoryTypeFilter},
     buffer::{Buffer, BufferCreateInfo, BufferUsage, BufferContents},
+    command_buffer::{
+        allocator::{StandardCommandBufferAllocator, StandardCommandBufferAllocatorCreateInfo},
+        AutoCommandBufferBuilder,
+        CommandBufferUsage,
+        CopyBufferInfo,
+    },
+    sync::{self, GpuFuture}
 };
 
 #[derive(BufferContents)]
@@ -50,28 +57,69 @@ fn main() {
 
     let memory_allocator = Arc::new(StandardMemoryAllocator::new_default(device.clone()));
 
-    let data = MyStruct {
-        a: 5,
-        b: 69,
-    };
-    let iter = (0..128).into_iter();
-
-    let buffer = Buffer::from_iter(
+    let source_content: Vec<i32> = (0..64).collect();
+    let source = Buffer::from_iter(
         memory_allocator.clone(),
         BufferCreateInfo {
-            usage: BufferUsage::UNIFORM_BUFFER,
+            usage: BufferUsage::TRANSFER_SRC,
             ..Default::default()
         },
         AllocationCreateInfo {
-            memory_type_filter: MemoryTypeFilter::PREFER_DEVICE | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
+            memory_type_filter: MemoryTypeFilter::PREFER_HOST
+                | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
             ..Default::default()
         },
-        iter,
+        source_content,
     )
-    .expect("failed to create buffer");
+    .expect("failed to create source buffer");
 
-    let mut content = buffer.write().unwrap();
-    content[127] = 0;
-    println!("{}", content[127]);
+    let destination_content: Vec<i32> = (0..64).map(|_| 0).collect();
+    let destination = Buffer::from_iter(
+        memory_allocator.clone(),
+        BufferCreateInfo {
+            usage: BufferUsage::TRANSFER_DST,
+            ..Default::default()
+        },
+        AllocationCreateInfo {
+            memory_type_filter: MemoryTypeFilter::PREFER_HOST
+                | MemoryTypeFilter::HOST_RANDOM_ACCESS,
+            ..Default::default()
+        },
+        destination_content,
+    )
+    .expect("failed to create destination buffer");
+
+    let command_buffer_allocator = StandardCommandBufferAllocator::new(
+        device.clone(),
+        StandardCommandBufferAllocatorCreateInfo::default(),
+    );
+
+    let mut builder = AutoCommandBufferBuilder::primary(
+        &command_buffer_allocator,
+        queue_family_index,
+        CommandBufferUsage::OneTimeSubmit,
+    )
+    .expect("failed to create command buffer");
+
+    builder.copy_buffer(
+        CopyBufferInfo::buffers(source.clone(), destination.clone())
+    ).unwrap();
+
+    let command_buffer = builder.build().expect("failed to build command buffer");
+
+    let future = sync::now(device.clone())
+        .then_execute(queue.clone(), command_buffer)
+        .expect("could not execute order 66")
+        .then_signal_fence_and_flush()
+        .expect("failed to flush command buffer");
+    
+    future.wait(None).expect("failed to wait for the future");
+
+    let future_src = source.read().expect("failed to read future source buffer");
+    let future_dst = destination.read().expect("failed to read future destination buffer");
+    assert_eq!(&*future_src, &*future_dst);
+
+    println!("{:?}\n{:?}", &*future_src, &*future_dst);
+
 
 }
