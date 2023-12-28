@@ -2,10 +2,6 @@ use std::sync::Arc;
 
 use vulkano::{
     buffer::{Buffer, BufferCreateInfo, BufferUsage},
-    command_buffer::{
-        allocator::{StandardCommandBufferAllocator, StandardCommandBufferAllocatorCreateInfo},
-        AutoCommandBufferBuilder, CommandBufferUsage, CopyBufferInfo,
-    },
     device::{Device, DeviceCreateInfo, QueueCreateInfo, QueueFlags},
     instance::{Instance, InstanceCreateInfo},
     memory::allocator::{AllocationCreateInfo, MemoryTypeFilter, StandardMemoryAllocator},
@@ -14,7 +10,6 @@ use vulkano::{
         layout::PipelineDescriptorSetLayoutCreateInfo,
         {ComputePipeline, PipelineLayout, PipelineShaderStageCreateInfo},
     },
-    sync::{self, GpuFuture},
     VulkanLibrary,
 };
 
