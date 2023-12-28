@@ -8,7 +8,15 @@ use vulkano::{
     pipeline::{
         compute::ComputePipelineCreateInfo,
         layout::PipelineDescriptorSetLayoutCreateInfo,
-        {ComputePipeline, PipelineLayout, PipelineShaderStageCreateInfo},
+        ComputePipeline,
+        PipelineLayout,
+        PipelineShaderStageCreateInfo,
+        Pipeline,
+    },
+    descriptor_set::{
+        allocator::StandardDescriptorSetAllocator,
+        PersistentDescriptorSet,
+        WriteDescriptorSet,
     },
     VulkanLibrary,
 };
@@ -84,5 +92,19 @@ fn main() {
         ComputePipelineCreateInfo::stage_layout(stage, layout),
     )
     .expect("failed to create compute pipeline");
+
+    // setup descriptor
+    let descriptor_set_allocator = StandardDescriptorSetAllocator::new(device.clone(), Default::default());
+    let pipeline_layout = compute_pipeline.layout();
+    let descriptor_set_layouts = pipeline_layout.set_layouts();
+    let descriptor_set_layout_index = 0;
+    let descriptor_set_layout = descriptor_set_layouts.get(descriptor_set_layout_index).expect("could not get correct descriptor set");
+    let descriptor_set = PersistentDescriptorSet::new(
+        &descriptor_set_allocator,
+        descriptor_set_layout.clone(),
+        [WriteDescriptorSet::buffer(0, data_buffer.clone())],
+        [],
+    )
+    .expect("failed to create descriptor set");
 }
 
