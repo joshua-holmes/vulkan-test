@@ -73,7 +73,7 @@ fn main() {
     )
     .expect("failed to create data buffer");
 
-    // setup compute shader
+    // setup compute pipeline
     let shader = cs::load(device.clone()).expect("failed to create shader module");
     let entry_point = shader.entry_point("main").expect("failed to create entry point");
     let stage = PipelineShaderStageCreateInfo::new(entry_point);
