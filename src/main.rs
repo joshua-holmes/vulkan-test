@@ -1,24 +1,30 @@
 use std::sync::Arc;
 
 use vulkano::{
-    VulkanLibrary,
-    instance::{Instance, InstanceCreateInfo},
-    device::{QueueFlags, Device, DeviceCreateInfo, QueueCreateInfo},
-    memory::allocator::{StandardMemoryAllocator, AllocationCreateInfo, MemoryTypeFilter},
     buffer::{Buffer, BufferCreateInfo, BufferUsage},
     command_buffer::{
         allocator::{StandardCommandBufferAllocator, StandardCommandBufferAllocatorCreateInfo},
-        AutoCommandBufferBuilder,
-        CommandBufferUsage,
-        CopyBufferInfo,
+        AutoCommandBufferBuilder, CommandBufferUsage, CopyBufferInfo,
     },
-    sync::{self, GpuFuture}
+    device::{Device, DeviceCreateInfo, QueueCreateInfo, QueueFlags},
+    instance::{Instance, InstanceCreateInfo},
+    memory::allocator::{AllocationCreateInfo, MemoryTypeFilter, StandardMemoryAllocator},
+    pipeline::{
+        compute::ComputePipelineCreateInfo,
+        layout::PipelineDescriptorSetLayoutCreateInfo,
+        {ComputePipeline, PipelineLayout, PipelineShaderStageCreateInfo},
+    },
+    sync::{self, GpuFuture},
+    VulkanLibrary,
 };
+
+mod cs;
 
 fn main() {
     // setup vulkan
     let library = VulkanLibrary::new().expect("no local Vulkan library/DLL");
-    let instance = Instance::new(library, InstanceCreateInfo::default()).expect("failed to create instance");
+    let instance =
+        Instance::new(library, InstanceCreateInfo::default()).expect("failed to create instance");
 
     // setup device
     let physical_device = instance
@@ -31,7 +37,9 @@ fn main() {
         .iter()
         .enumerate()
         .position(|(_i, queue_family_properties)| {
-            queue_family_properties.queue_flags.contains(QueueFlags::GRAPHICS)
+            queue_family_properties
+                .queue_flags
+                .contains(QueueFlags::GRAPHICS)
         })
         .expect("couldn't find a graphical queue fmaily") as u32;
     let (device, mut queues) = Device::new(
@@ -42,72 +50,44 @@ fn main() {
                 ..Default::default()
             }],
             ..Default::default()
-        }
+        },
     )
     .expect("failed to create device");
     let queue = queues.next().unwrap();
     let memory_allocator = Arc::new(StandardMemoryAllocator::new_default(device.clone()));
 
-    // setup original buffers
-    let source_content: Vec<i32> = (0..64).collect();
-    let source = Buffer::from_iter(
+    // setup original buffer
+    let data_iter = 0..65536_u32;
+    let data_buffer = Buffer::from_iter(
         memory_allocator.clone(),
         BufferCreateInfo {
-            usage: BufferUsage::TRANSFER_SRC,
+            usage: BufferUsage::STORAGE_BUFFER,
             ..Default::default()
         },
         AllocationCreateInfo {
-            memory_type_filter: MemoryTypeFilter::PREFER_HOST
+            memory_type_filter: MemoryTypeFilter::PREFER_DEVICE
                 | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
             ..Default::default()
         },
-        source_content,
+        data_iter,
     )
-    .expect("failed to create source buffer");
+    .expect("failed to create data buffer");
 
-    let destination_content: Vec<i32> = (0..64).map(|_| 0).collect();
-    let destination = Buffer::from_iter(
-        memory_allocator.clone(),
-        BufferCreateInfo {
-            usage: BufferUsage::TRANSFER_DST,
-            ..Default::default()
-        },
-        AllocationCreateInfo {
-            memory_type_filter: MemoryTypeFilter::PREFER_HOST
-                | MemoryTypeFilter::HOST_RANDOM_ACCESS,
-            ..Default::default()
-        },
-        destination_content,
+    // setup compute shader
+    let shader = cs::load(device.clone()).expect("failed to create shader module");
+    let entry_point = shader.entry_point("main").expect("failed to create entry point");
+    let stage = PipelineShaderStageCreateInfo::new(entry_point);
+    let layout = PipelineLayout::new(device.clone(), 
+        PipelineDescriptorSetLayoutCreateInfo::from_stages([&stage])
+            .into_pipeline_layout_create_info(device.clone())
+            .expect("could not create pipeline layout info"),
     )
-    .expect("failed to create destination buffer");
-
-    // setup command buffer
-    let command_buffer_allocator = StandardCommandBufferAllocator::new(
+    .expect("could not create pipeline layout");
+    let compute_pipeline = ComputePipeline::new(
         device.clone(),
-        StandardCommandBufferAllocatorCreateInfo::default(),
-    );
-    let mut builder = AutoCommandBufferBuilder::primary(
-        &command_buffer_allocator,
-        queue_family_index,
-        CommandBufferUsage::OneTimeSubmit,
+        None,
+        ComputePipelineCreateInfo::stage_layout(stage, layout),
     )
-    .expect("failed to create command buffer");
-    builder.copy_buffer(
-        CopyBufferInfo::buffers(source.clone(), destination.clone())
-    ).unwrap();
-    let command_buffer = builder.build().expect("failed to build command buffer");
-
-    // execute command
-    let future = sync::now(device.clone())
-        .then_execute(queue.clone(), command_buffer)
-        .expect("could not execute order 66")
-        .then_signal_fence_and_flush()
-        .expect("failed to flush command buffer");
-    
-    // wait for command to finish and read data
-    future.wait(None).expect("failed to wait for the future");
-    let future_src = source.read().expect("failed to read future source buffer");
-    let future_dst = destination.read().expect("failed to read future destination buffer");
-    assert_eq!(&*future_src, &*future_dst);
-    println!("{:?}\n{:?}", &*future_src, &*future_dst);
+    .expect("failed to create compute pipeline");
 }
+
