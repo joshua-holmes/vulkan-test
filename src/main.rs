@@ -2,22 +2,22 @@ use std::sync::Arc;
 
 use vulkano::{
     buffer::{Buffer, BufferCreateInfo, BufferUsage},
+    command_buffer::{
+        allocator::{StandardCommandBufferAllocator, StandardCommandBufferAllocatorCreateInfo},
+        AutoCommandBufferBuilder, CommandBufferUsage,
+    },
+    descriptor_set::{
+        allocator::StandardDescriptorSetAllocator, PersistentDescriptorSet, WriteDescriptorSet,
+    },
     device::{Device, DeviceCreateInfo, QueueCreateInfo, QueueFlags},
     instance::{Instance, InstanceCreateInfo},
     memory::allocator::{AllocationCreateInfo, MemoryTypeFilter, StandardMemoryAllocator},
     pipeline::{
-        compute::ComputePipelineCreateInfo,
-        layout::PipelineDescriptorSetLayoutCreateInfo,
-        ComputePipeline,
-        PipelineLayout,
+        compute::ComputePipelineCreateInfo, layout::PipelineDescriptorSetLayoutCreateInfo,
+        ComputePipeline, Pipeline, PipelineBindPoint, PipelineLayout,
         PipelineShaderStageCreateInfo,
-        Pipeline,
     },
-    descriptor_set::{
-        allocator::StandardDescriptorSetAllocator,
-        PersistentDescriptorSet,
-        WriteDescriptorSet,
-    },
+    sync::{self, GpuFuture},
     VulkanLibrary,
 };
 
@@ -78,9 +78,12 @@ fn main() {
 
     // setup compute pipeline
     let shader = cs::load(device.clone()).expect("failed to create shader module");
-    let entry_point = shader.entry_point("main").expect("failed to create entry point");
+    let entry_point = shader
+        .entry_point("main")
+        .expect("failed to create entry point");
     let stage = PipelineShaderStageCreateInfo::new(entry_point);
-    let layout = PipelineLayout::new(device.clone(), 
+    let layout = PipelineLayout::new(
+        device.clone(),
         PipelineDescriptorSetLayoutCreateInfo::from_stages([&stage])
             .into_pipeline_layout_create_info(device.clone())
             .expect("could not create pipeline layout info"),
@@ -94,11 +97,14 @@ fn main() {
     .expect("failed to create compute pipeline");
 
     // setup descriptor
-    let descriptor_set_allocator = StandardDescriptorSetAllocator::new(device.clone(), Default::default());
+    let descriptor_set_allocator =
+        StandardDescriptorSetAllocator::new(device.clone(), Default::default());
     let pipeline_layout = compute_pipeline.layout();
     let descriptor_set_layouts = pipeline_layout.set_layouts();
     let descriptor_set_layout_index = 0;
-    let descriptor_set_layout = descriptor_set_layouts.get(descriptor_set_layout_index).expect("could not get correct descriptor set");
+    let descriptor_set_layout = descriptor_set_layouts
+        .get(descriptor_set_layout_index)
+        .expect("could not get correct descriptor set");
     let descriptor_set = PersistentDescriptorSet::new(
         &descriptor_set_allocator,
         descriptor_set_layout.clone(),
@@ -106,5 +112,46 @@ fn main() {
         [],
     )
     .expect("failed to create descriptor set");
-}
 
+    // dispatch command buffer
+    let command_buffer_allocator = StandardCommandBufferAllocator::new(
+        device.clone(),
+        StandardCommandBufferAllocatorCreateInfo::default(),
+    );
+    let mut command_buffer_builder = AutoCommandBufferBuilder::primary(
+        &command_buffer_allocator,
+        queue.queue_family_index(),
+        CommandBufferUsage::OneTimeSubmit,
+    )
+    .expect("failed to create command buffer builder");
+    let work_group_counts = [1024, 1, 1];
+    command_buffer_builder
+        .bind_pipeline_compute(compute_pipeline.clone())
+        .expect("failed to bind pipeline command buffer builder")
+        .bind_descriptor_sets(
+            PipelineBindPoint::Compute,
+            compute_pipeline.layout().clone(),
+            descriptor_set_layout_index as u32,
+            descriptor_set,
+        )
+        .expect("failed to bind command buffer to descriptor sets")
+        .dispatch(work_group_counts)
+        .expect("failed to dispatch work groups");
+    let command_buffer = command_buffer_builder
+        .build()
+        .expect("failed to build command buffer");
+
+    // submit command buffer
+    let future = sync::now(device.clone())
+        .then_execute(queue.clone(), command_buffer)
+        .expect("failed to execute command buffer")
+        .then_signal_fence_and_flush()
+        .expect("failed to signal fence and flush");
+    future.wait(None).unwrap();
+
+    // check that exectution was correct
+    let content = data_buffer.read().expect("failed to read data buffer");
+    for (i, val) in content.iter().enumerate() {
+        println!("{} {}", i, val);
+    }
+}
