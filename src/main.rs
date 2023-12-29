@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{sync::Arc, time::SystemTime};
 
 use vulkano::{
     buffer::{Buffer, BufferCreateInfo, BufferUsage},
@@ -72,7 +72,7 @@ fn main() {
                 | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
             ..Default::default()
         },
-        data_iter,
+        data_iter.clone(),
     )
     .expect("failed to create data buffer");
 
@@ -142,16 +142,38 @@ fn main() {
         .expect("failed to build command buffer");
 
     // submit command buffer
-    let future = sync::now(device.clone())
+    let now_future = sync::now(device.clone());
+
+    // time GPU's execution, for fun
+    println!("Starting timer for GPU to compute...");
+    let gpu_start = SystemTime::now();
+    let future = now_future
         .then_execute(queue.clone(), command_buffer)
         .expect("failed to execute command buffer")
         .then_signal_fence_and_flush()
         .expect("failed to signal fence and flush");
     future.wait(None).unwrap();
+    let gpu_elapsed = gpu_start.elapsed().expect("could not elapse gpu time");
+    println!("Done\n");
+
+    // time CPU's execution, for fun
+    let mut cpu_buffer: Vec<_> = data_iter.collect();
+    println!("Starting timer for CPU to compute...");
+    let cpu_start = SystemTime::now();
+    for n in cpu_buffer.iter_mut() {
+        *n *= 12;
+    }
+    let cpu_elapsed = cpu_start.elapsed().expect("could not elapse cpu time");
+    println!("Done\n");
+
+    // check differences
+    println!("GPU took this long: {:?}\nCPU took this long: {:?}\n", gpu_elapsed, cpu_elapsed);
 
     // check that exectution was correct
+    println!("Checking that values match...");
     let content = data_buffer.read().expect("failed to read data buffer");
-    for (i, val) in content.iter().enumerate() {
-        println!("{} {}", i, val);
+    for (gpu_val, cpu_val) in content.iter().zip(cpu_buffer.iter()) {
+        assert_eq!(*gpu_val, *cpu_val);
     }
+    println!("Values were equivelent");
 }
