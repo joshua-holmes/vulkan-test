@@ -4,20 +4,21 @@ use vulkano::{
     buffer::{Buffer, BufferCreateInfo, BufferUsage},
     command_buffer::{
         allocator::{StandardCommandBufferAllocator, StandardCommandBufferAllocatorCreateInfo},
-        AutoCommandBufferBuilder, CommandBufferUsage, ClearColorImageInfo,
+        AutoCommandBufferBuilder, ClearColorImageInfo, CommandBufferUsage, CopyBufferToImageInfo,
     },
     descriptor_set::{
         allocator::StandardDescriptorSetAllocator, PersistentDescriptorSet, WriteDescriptorSet,
     },
     device::{Device, DeviceCreateInfo, QueueCreateInfo, QueueFlags},
+    format::{ClearColorValue, Format},
+    image::{Image, ImageCreateInfo, ImageType, ImageUsage},
     instance::{Instance, InstanceCreateInfo},
     memory::allocator::{AllocationCreateInfo, MemoryTypeFilter, StandardMemoryAllocator},
     pipeline::{
         compute::ComputePipelineCreateInfo, layout::PipelineDescriptorSetLayoutCreateInfo,
-        ComputePipeline, Pipeline, PipelineLayout,
-        PipelineShaderStageCreateInfo,
+        ComputePipeline, Pipeline, PipelineLayout, PipelineShaderStageCreateInfo,
     },
-    VulkanLibrary, format::{ClearColorValue, Format}, image::{Image, ImageCreateInfo, ImageType, ImageUsage},
+    VulkanLibrary, sync::{self, GpuFuture},
 };
 
 fn main() {
@@ -56,59 +57,42 @@ fn main() {
     let queue = queues.next().unwrap();
     let memory_allocator = Arc::new(StandardMemoryAllocator::new_default(device.clone()));
 
-    // setup original buffer
-    let data_iter = 0..65536_u32;
-    let data_buffer = Buffer::from_iter(
-        memory_allocator.clone(),
-        BufferCreateInfo {
-            usage: BufferUsage::STORAGE_BUFFER,
-            ..Default::default()
-        },
-        AllocationCreateInfo {
-            memory_type_filter: MemoryTypeFilter::PREFER_DEVICE
-                | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
-            ..Default::default()
-        },
-        data_iter.clone(),
-    )
-    .expect("failed to create data buffer");
-
     // setup compute pipeline
-    let shader = cs::load(device.clone()).expect("failed to create shader module");
-    let entry_point = shader
-        .entry_point("main")
-        .expect("failed to create entry point");
-    let stage = PipelineShaderStageCreateInfo::new(entry_point);
-    let layout = PipelineLayout::new(
-        device.clone(),
-        PipelineDescriptorSetLayoutCreateInfo::from_stages([&stage])
-            .into_pipeline_layout_create_info(device.clone())
-            .expect("could not create pipeline layout info"),
-    )
-    .expect("could not create pipeline layout");
-    let compute_pipeline = ComputePipeline::new(
-        device.clone(),
-        None,
-        ComputePipelineCreateInfo::stage_layout(stage, layout),
-    )
-    .expect("failed to create compute pipeline");
+    // let shader = cs::load(device.clone()).expect("failed to create shader module");
+    // let entry_point = shader
+    //     .entry_point("main")
+    //     .expect("failed to create entry point");
+    // let stage = PipelineShaderStageCreateInfo::new(entry_point);
+    // let layout = PipelineLayout::new(
+    //     device.clone(),
+    //     PipelineDescriptorSetLayoutCreateInfo::from_stages([&stage])
+    //         .into_pipeline_layout_create_info(device.clone())
+    //         .expect("could not create pipeline layout info"),
+    // )
+    // .expect("could not create pipeline layout");
+    // let compute_pipeline = ComputePipeline::new(
+    //     device.clone(),
+    //     None,
+    //     ComputePipelineCreateInfo::stage_layout(stage, layout),
+    // )
+    // .expect("failed to create compute pipeline");
 
     // setup descriptor
-    let descriptor_set_allocator =
-        StandardDescriptorSetAllocator::new(device.clone(), Default::default());
-    let pipeline_layout = compute_pipeline.layout();
-    let descriptor_set_layouts = pipeline_layout.set_layouts();
-    let descriptor_set_layout_index = 0;
-    let descriptor_set_layout = descriptor_set_layouts
-        .get(descriptor_set_layout_index)
-        .expect("could not get correct descriptor set");
-    let descriptor_set = PersistentDescriptorSet::new(
-        &descriptor_set_allocator,
-        descriptor_set_layout.clone(),
-        [WriteDescriptorSet::buffer(0, data_buffer.clone())],
-        [],
-    )
-    .expect("failed to create descriptor set");
+    // let descriptor_set_allocator =
+    //     StandardDescriptorSetAllocator::new(device.clone(), Default::default());
+    // let pipeline_layout = compute_pipeline.layout();
+    // let descriptor_set_layouts = pipeline_layout.set_layouts();
+    // let descriptor_set_layout_index = 0;
+    // let descriptor_set_layout = descriptor_set_layouts
+    //     .get(descriptor_set_layout_index)
+    //     .expect("could not get correct descriptor set");
+    // let descriptor_set = PersistentDescriptorSet::new(
+    //     &descriptor_set_allocator,
+    //     descriptor_set_layout.clone(),
+    //     [WriteDescriptorSet::buffer(0, data_buffer.clone())],
+    //     [],
+    // )
+    // .expect("failed to create descriptor set");
 
     // create image
     let image = Image::new(
@@ -127,6 +111,21 @@ fn main() {
     )
     .expect("could not create image");
 
+    let buf = Buffer::from_iter(
+        memory_allocator.clone(),
+        BufferCreateInfo {
+            usage: BufferUsage::TRANSFER_DST,
+            ..Default::default()
+        },
+        AllocationCreateInfo {
+            memory_type_filter: MemoryTypeFilter::PREFER_HOST
+                | MemoryTypeFilter::HOST_RANDOM_ACCESS,
+            ..Default::default()
+        },
+        (0..1024 * 1024 * 4).map(|_| 0u8),
+    )
+    .expect("failed to create buffer");
+
     // dispatch command buffer
     let command_buffer_allocator = StandardCommandBufferAllocator::new(
         device.clone(),
@@ -143,7 +142,19 @@ fn main() {
             clear_value: ClearColorValue::Float([0.0, 0.0, 1.0, 1.0]),
             ..ClearColorImageInfo::image(image.clone())
         })
-        .expect("could not clear image");
-
+        .expect("could not clear image")
+        .copy_buffer_to_image(CopyBufferToImageInfo::buffer_image(
+            buf.clone(),
+            image.clone(),
+        ))
+        .expect("failed to copy buffer to image");
     let command_buffer = builder.build().expect("failed to build command buffer");
+
+    // execute
+    let future = sync::now(device.clone())
+        .then_execute(queue.clone(), command_buffer)
+        .expect("failed to execute command buffer")
+        .then_signal_fence_and_flush()
+        .unwrap();
+    future.wait(None).unwrap();
 }
