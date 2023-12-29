@@ -1,23 +1,17 @@
 use std::sync::Arc;
 
+use image::{ImageBuffer, Rgba};
 use vulkano::{
     buffer::{Buffer, BufferCreateInfo, BufferUsage},
     command_buffer::{
         allocator::{StandardCommandBufferAllocator, StandardCommandBufferAllocatorCreateInfo},
         AutoCommandBufferBuilder, ClearColorImageInfo, CommandBufferUsage, CopyBufferToImageInfo,
     },
-    descriptor_set::{
-        allocator::StandardDescriptorSetAllocator, PersistentDescriptorSet, WriteDescriptorSet,
-    },
     device::{Device, DeviceCreateInfo, QueueCreateInfo, QueueFlags},
     format::{ClearColorValue, Format},
     image::{Image, ImageCreateInfo, ImageType, ImageUsage},
     instance::{Instance, InstanceCreateInfo},
     memory::allocator::{AllocationCreateInfo, MemoryTypeFilter, StandardMemoryAllocator},
-    pipeline::{
-        compute::ComputePipelineCreateInfo, layout::PipelineDescriptorSetLayoutCreateInfo,
-        ComputePipeline, Pipeline, PipelineLayout, PipelineShaderStageCreateInfo,
-    },
     VulkanLibrary, sync::{self, GpuFuture},
 };
 
@@ -57,43 +51,6 @@ fn main() {
     let queue = queues.next().unwrap();
     let memory_allocator = Arc::new(StandardMemoryAllocator::new_default(device.clone()));
 
-    // setup compute pipeline
-    // let shader = cs::load(device.clone()).expect("failed to create shader module");
-    // let entry_point = shader
-    //     .entry_point("main")
-    //     .expect("failed to create entry point");
-    // let stage = PipelineShaderStageCreateInfo::new(entry_point);
-    // let layout = PipelineLayout::new(
-    //     device.clone(),
-    //     PipelineDescriptorSetLayoutCreateInfo::from_stages([&stage])
-    //         .into_pipeline_layout_create_info(device.clone())
-    //         .expect("could not create pipeline layout info"),
-    // )
-    // .expect("could not create pipeline layout");
-    // let compute_pipeline = ComputePipeline::new(
-    //     device.clone(),
-    //     None,
-    //     ComputePipelineCreateInfo::stage_layout(stage, layout),
-    // )
-    // .expect("failed to create compute pipeline");
-
-    // setup descriptor
-    // let descriptor_set_allocator =
-    //     StandardDescriptorSetAllocator::new(device.clone(), Default::default());
-    // let pipeline_layout = compute_pipeline.layout();
-    // let descriptor_set_layouts = pipeline_layout.set_layouts();
-    // let descriptor_set_layout_index = 0;
-    // let descriptor_set_layout = descriptor_set_layouts
-    //     .get(descriptor_set_layout_index)
-    //     .expect("could not get correct descriptor set");
-    // let descriptor_set = PersistentDescriptorSet::new(
-    //     &descriptor_set_allocator,
-    //     descriptor_set_layout.clone(),
-    //     [WriteDescriptorSet::buffer(0, data_buffer.clone())],
-    //     [],
-    // )
-    // .expect("failed to create descriptor set");
-
     // create image
     let image = Image::new(
         memory_allocator.clone(),
@@ -110,11 +67,21 @@ fn main() {
         },
     )
     .expect("could not create image");
+    let pixel_data_iter = (0..1024 * 1024 * 4).enumerate().map(|(i, _)| {
+        match i % 4 {
+            0 => 255, // red
+            1 => 0,   // green
+            2 => 0,   // blue
+            3 => 255, // alpha
+            _ => unreachable!("`i % 4` should only contain numbers 0-3 (inclusive)")
+        }
+    });
 
+    // create buffer from image
     let buf = Buffer::from_iter(
         memory_allocator.clone(),
         BufferCreateInfo {
-            usage: BufferUsage::TRANSFER_DST,
+            usage: BufferUsage::TRANSFER_DST | BufferUsage::TRANSFER_SRC,
             ..Default::default()
         },
         AllocationCreateInfo {
@@ -122,7 +89,7 @@ fn main() {
                 | MemoryTypeFilter::HOST_RANDOM_ACCESS,
             ..Default::default()
         },
-        (0..1024 * 1024 * 4).map(|_| 0u8),
+        pixel_data_iter,
     )
     .expect("failed to create buffer");
 
@@ -157,4 +124,9 @@ fn main() {
         .then_signal_fence_and_flush()
         .unwrap();
     future.wait(None).unwrap();
+
+    // extract image
+    let buffer_content = buf.read().expect("failed to read buffer");
+    let image = ImageBuffer::<Rgba<u8>, _>::from_raw(1024, 1024, buffer_content).expect("failed to extract image");
+    image.save("image.png").expect("could not save image");
 }
