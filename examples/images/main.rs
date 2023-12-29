@@ -1,8 +1,10 @@
+use std::sync::Arc;
+
 use vulkano::{
     buffer::{Buffer, BufferCreateInfo, BufferUsage},
     command_buffer::{
         allocator::{StandardCommandBufferAllocator, StandardCommandBufferAllocatorCreateInfo},
-        AutoCommandBufferBuilder, CommandBufferUsage,
+        AutoCommandBufferBuilder, CommandBufferUsage, ClearColorImageInfo,
     },
     descriptor_set::{
         allocator::StandardDescriptorSetAllocator, PersistentDescriptorSet, WriteDescriptorSet,
@@ -12,11 +14,10 @@ use vulkano::{
     memory::allocator::{AllocationCreateInfo, MemoryTypeFilter, StandardMemoryAllocator},
     pipeline::{
         compute::ComputePipelineCreateInfo, layout::PipelineDescriptorSetLayoutCreateInfo,
-        ComputePipeline, Pipeline, PipelineBindPoint, PipelineLayout,
+        ComputePipeline, Pipeline, PipelineLayout,
         PipelineShaderStageCreateInfo,
     },
-    sync::{self, GpuFuture},
-    VulkanLibrary,
+    VulkanLibrary, format::{ClearColorValue, Format}, image::{Image, ImageCreateInfo, ImageType, ImageUsage},
 };
 
 fn main() {
@@ -109,31 +110,40 @@ fn main() {
     )
     .expect("failed to create descriptor set");
 
+    // create image
+    let image = Image::new(
+        memory_allocator.clone(),
+        ImageCreateInfo {
+            image_type: ImageType::Dim2d,
+            format: Format::R8G8B8A8_UNORM,
+            extent: [1024, 1024, 1],
+            usage: ImageUsage::TRANSFER_DST | ImageUsage::TRANSFER_SRC,
+            ..Default::default()
+        },
+        AllocationCreateInfo {
+            memory_type_filter: MemoryTypeFilter::PREFER_DEVICE,
+            ..Default::default()
+        },
+    )
+    .expect("could not create image");
+
     // dispatch command buffer
     let command_buffer_allocator = StandardCommandBufferAllocator::new(
         device.clone(),
         StandardCommandBufferAllocatorCreateInfo::default(),
     );
-    let mut command_buffer_builder = AutoCommandBufferBuilder::primary(
+    let mut builder = AutoCommandBufferBuilder::primary(
         &command_buffer_allocator,
-        queue.queue_family_index(),
+        queue_family_index,
         CommandBufferUsage::OneTimeSubmit,
     )
     .expect("failed to create command buffer builder");
-    let work_group_counts = [1024, 1, 1];
-    command_buffer_builder
-        .bind_pipeline_compute(compute_pipeline.clone())
-        .expect("failed to bind pipeline command buffer builder")
-        .bind_descriptor_sets(
-            PipelineBindPoint::Compute,
-            compute_pipeline.layout().clone(),
-            descriptor_set_layout_index as u32,
-            descriptor_set,
-        )
-        .expect("failed to bind command buffer to descriptor sets")
-        .dispatch(work_group_counts)
-        .expect("failed to dispatch work groups");
-    let command_buffer = command_buffer_builder
-        .build()
-        .expect("failed to build command buffer");
+    builder
+        .clear_color_image(ClearColorImageInfo {
+            clear_value: ClearColorValue::Float([0.0, 0.0, 1.0, 1.0]),
+            ..ClearColorImageInfo::image(image.clone())
+        })
+        .expect("could not clear image");
+
+    let command_buffer = builder.build().expect("failed to build command buffer");
 }
