@@ -1,11 +1,36 @@
 use std::sync::Arc;
 
 use vulkano::{
+    buffer::{Buffer, BufferContents, BufferCreateInfo, BufferUsage},
     device::{Device, DeviceCreateInfo, QueueCreateInfo, QueueFlags},
     instance::{Instance, InstanceCreateInfo},
-    memory::allocator::StandardMemoryAllocator,
+    memory::allocator::{AllocationCreateInfo, MemoryTypeFilter, StandardMemoryAllocator},
+    pipeline::graphics::vertex_input::Vertex as VertexMacro,
     VulkanLibrary,
 };
+
+#[derive(BufferContents, VertexMacro)]
+#[repr(C)]
+pub struct Vertex {
+    #[format(R32G32B32_SFLOAT)]
+    pub position: [f32; 2],
+}
+
+pub struct Triangle(pub Vertex, pub Vertex, pub Vertex);
+
+impl Triangle {
+    fn new(point_1: [f32; 2], point_2: [f32; 2], point_3: [f32; 2]) -> Self {
+        Self(
+            Vertex { position: point_1 },
+            Vertex { position: point_2 },
+            Vertex { position: point_3 },
+        )
+    }
+
+    fn move_verticies_out(self) -> Vec<Vertex> {
+        vec![self.0, self.1, self.2]
+    }
+}
 
 fn main() {
     // setup vulkan
@@ -42,4 +67,24 @@ fn main() {
     .expect("failed to create device");
     let queue = queues.next().unwrap();
     let memory_allocator = Arc::new(StandardMemoryAllocator::new_default(device.clone()));
+
+    // setup a triangle
+    let my_triangle = Triangle::new([-0.5, -0.5], [0.5, -0.25], [0., 0.5]);
+
+    // setup buffer
+    let vertex_buffer = Buffer::from_iter(
+        memory_allocator.clone(),
+        BufferCreateInfo {
+            usage: BufferUsage::VERTEX_BUFFER,
+            ..Default::default()
+        },
+        AllocationCreateInfo {
+            memory_type_filter: MemoryTypeFilter::PREFER_DEVICE
+                | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
+            ..Default::default()
+        },
+        my_triangle.move_verticies_out(),
+    )
+    .expect("failed to create vertex buffer");
 }
+
