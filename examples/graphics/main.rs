@@ -88,3 +88,17 @@ fn main() {
     .expect("failed to create vertex buffer");
 }
 
+mod shaders {
+    vulkano_shaders::shader!{
+        shaders: {
+            vertex: {
+                ty: "vertex",
+                path: "examples/graphics/shader.vert"
+            },
+            fragment: {
+                ty: "fragment",
+                path: "examples/graphics/shader.frag"
+            },
+        }
+    }
+}
