@@ -6,7 +6,7 @@ use vulkano::{
     instance::{Instance, InstanceCreateInfo},
     memory::allocator::{AllocationCreateInfo, MemoryTypeFilter, StandardMemoryAllocator},
     pipeline::graphics::vertex_input::Vertex as VertexMacro,
-    VulkanLibrary,
+    VulkanLibrary, format::Format, image::{view::ImageView, Image, ImageCreateInfo, ImageUsage, ImageType}, render_pass::{Framebuffer, FramebufferCreateInfo, Subpass}, command_buffer::{AutoCommandBufferBuilder, CommandBufferUsage, allocator::{StandardCommandBufferAllocator, StandardCommandBufferAllocatorCreateInfo}, RenderPassBeginInfo, SubpassBeginInfo, SubpassContents, SubpassEndInfo},
 };
 
 #[derive(BufferContents, VertexMacro)]
@@ -86,6 +86,80 @@ fn main() {
         my_triangle.move_verticies_out(),
     )
     .expect("failed to create vertex buffer");
+
+    let render_pass = vulkano::single_pass_renderpass!(
+        device.clone(),
+        attachments: {
+            clear_color: {
+                format: Format::R8G8B8A8_UNORM,
+                samples: 1,
+                load_op: Clear,
+                store_op: Store,
+            },
+        },
+        pass: {
+            color: [clear_color],
+            depth_stencil: {}
+        },
+    )
+    .expect("failed to instantiate render pass");
+
+    // create image
+    let image = Image::new(
+        memory_allocator.clone(),
+        ImageCreateInfo {
+            image_type: ImageType::Dim2d,
+            format: Format::R8G8B8A8_UNORM,
+            extent: [1024, 1024, 1],
+            usage: ImageUsage::TRANSFER_DST | ImageUsage::TRANSFER_SRC,
+            ..Default::default()
+        },
+        AllocationCreateInfo {
+            memory_type_filter: MemoryTypeFilter::PREFER_DEVICE,
+            ..Default::default()
+        },
+    )
+    .expect("could not create image");
+
+    // create image view
+    let view = ImageView::new_default(image.clone()).expect("failed to create image");
+    let framebuffer = Framebuffer::new(
+        render_pass.clone(),
+        FramebufferCreateInfo {
+            attachments: vec![view],
+            ..Default::default()
+        },
+    )
+    .expect("failed to create framebuffer");
+
+    // create command buffer builder
+    let command_buffer_allocator = StandardCommandBufferAllocator::new(
+        device.clone(),
+        StandardCommandBufferAllocatorCreateInfo::default(),
+    );
+    let mut builder = AutoCommandBufferBuilder::primary(
+        &command_buffer_allocator,
+        queue.queue_family_index(),
+        CommandBufferUsage::OneTimeSubmit,
+    )
+    .expect("could not build builder, ya know bob?");
+
+    // build
+    builder
+        .begin_render_pass(
+            RenderPassBeginInfo {
+                clear_values: vec![Some([0.0, 0.0, 1.0, 1.0].into())],
+                ..RenderPassBeginInfo::framebuffer(framebuffer.clone())
+            },
+            SubpassBeginInfo {
+                contents: SubpassContents::Inline,
+                ..Default::default()
+            },
+        )
+        .expect("cannot begin render pass")
+        .end_render_pass(SubpassEndInfo::default())
+        .expect("cannot end render pass");
+
 }
 
 mod shaders {
