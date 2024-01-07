@@ -2,11 +2,31 @@ use std::sync::Arc;
 
 use vulkano::{
     buffer::{Buffer, BufferContents, BufferCreateInfo, BufferUsage},
+    command_buffer::{
+        allocator::{StandardCommandBufferAllocator, StandardCommandBufferAllocatorCreateInfo},
+        AutoCommandBufferBuilder, CommandBufferUsage, RenderPassBeginInfo, SubpassBeginInfo,
+        SubpassContents, SubpassEndInfo,
+    },
     device::{Device, DeviceCreateInfo, QueueCreateInfo, QueueFlags},
+    format::Format,
+    image::{view::ImageView, Image, ImageCreateInfo, ImageType, ImageUsage},
     instance::{Instance, InstanceCreateInfo},
     memory::allocator::{AllocationCreateInfo, MemoryTypeFilter, StandardMemoryAllocator},
-    pipeline::graphics::vertex_input::Vertex as VertexMacro,
-    VulkanLibrary, format::Format, image::{view::ImageView, Image, ImageCreateInfo, ImageUsage, ImageType}, render_pass::{Framebuffer, FramebufferCreateInfo, Subpass}, command_buffer::{AutoCommandBufferBuilder, CommandBufferUsage, allocator::{StandardCommandBufferAllocator, StandardCommandBufferAllocatorCreateInfo}, RenderPassBeginInfo, SubpassBeginInfo, SubpassContents, SubpassEndInfo},
+    pipeline::{
+        graphics::{
+            color_blend::{ColorBlendAttachmentState, ColorBlendState},
+            input_assembly::InputAssemblyState,
+            multisample::MultisampleState,
+            rasterization::RasterizationState,
+            vertex_input::{Vertex as VertexMacro, VertexDefinition},
+            viewport::{Viewport, ViewportState},
+            GraphicsPipelineCreateInfo,
+        },
+        layout::PipelineDescriptorSetLayoutCreateInfo,
+        PipelineLayout, PipelineShaderStageCreateInfo, GraphicsPipeline,
+    },
+    render_pass::{Framebuffer, FramebufferCreateInfo, Subpass},
+    VulkanLibrary,
 };
 
 #[derive(BufferContents, VertexMacro)]
@@ -160,10 +180,71 @@ fn main() {
         .end_render_pass(SubpassEndInfo::default())
         .expect("cannot end render pass");
 
+    // load shaders
+    let vs = shaders::load_vertex(device.clone()).expect("failed to load vertex shader");
+    let fs = shaders::load_fragment(device.clone()).expect("failed to load fragment shader");
+
+    // setup viewport
+    let viewport = Viewport {
+        offset: [0.0, 0.0],
+        extent: [1024.0, 1024.0],
+        depth_range: 0.0..=1.0,
+    };
+
+    let pipeline = {
+        let vs = vs
+            .entry_point("main")
+            .expect("cannot find entry point for vertex shader");
+        let fs = fs
+            .entry_point("main")
+            .expect("cannot find entry point for fragment shader");
+
+        let vertext_input_state = Vertex::per_vertex()
+            .definition(&vs.info().input_interface)
+            .expect("could not build vertext input state for provided interface");
+
+        let stages = [
+            PipelineShaderStageCreateInfo::new(vs),
+            PipelineShaderStageCreateInfo::new(fs),
+        ];
+
+        let layout = PipelineLayout::new(
+            device.clone(),
+            PipelineDescriptorSetLayoutCreateInfo::from_stages(&stages)
+                .into_pipeline_layout_create_info(device.clone())
+                .expect("failed to create pipeline descriptor set"),
+        )
+        .expect("failed to create pipeline layout");
+
+        let subpass = Subpass::from(render_pass.clone(), 0).expect("could not create subpass");
+
+        GraphicsPipeline::new(
+            device.clone(),
+            None,
+            GraphicsPipelineCreateInfo {
+                stages: stages.into_iter().collect(),
+                vertex_input_state: Some(vertext_input_state),
+                input_assembly_state: Some(InputAssemblyState::default()),
+                viewport_state: Some(ViewportState {
+                    viewports: [viewport].into_iter().collect(),
+                    ..Default::default()
+                }),
+                rasterization_state: Some(RasterizationState::default()),
+                multisample_state: Some(MultisampleState::default()),
+                color_blend_state: Some(ColorBlendState::with_attachment_states(
+                    subpass.num_color_attachments(),
+                    ColorBlendAttachmentState::default(),
+                )),
+                subpass: Some(subpass.into()),
+                ..GraphicsPipelineCreateInfo::layout(layout)
+            },
+        )
+        .expect("failed to create graphics pipeline");
+    };
 }
 
 mod shaders {
-    vulkano_shaders::shader!{
+    vulkano_shaders::shader! {
         shaders: {
             vertex: {
                 ty: "vertex",
