@@ -27,8 +27,11 @@ use vulkano::{
         GraphicsPipeline, PipelineLayout, PipelineShaderStageCreateInfo,
     },
     render_pass::{Framebuffer, FramebufferCreateInfo, Subpass},
-    VulkanLibrary, sync::{self, GpuFuture},
+    sync::{self, GpuFuture},
+    swpchain::Surface,
+    VulkanLibrary,
 };
+use winit::{event_loop::{EventLoop, ControlFlow}, window::Window, event::{Event, WindowEvent}};
 
 #[derive(BufferContents, VertexMacro)]
 #[repr(C)]
@@ -56,8 +59,20 @@ impl Triangle {
 fn main() {
     // setup vulkan
     let library = VulkanLibrary::new().expect("no local Vulkan library/DLL");
-    let instance =
-        Instance::new(library, InstanceCreateInfo::default()).expect("failed to create instance");
+    let required_extensions = Surface::required_extensions(&event_loop);
+    let instance = Instance::new(
+        library,
+        InstanceCreateInfo {
+            enabled_extensions: required_extensions,
+            ..Default::default()
+        },
+    )
+    .expect("failed to create instance");
+
+    // setup window
+    let event_loop = EventLoop::new().expect("unable to create event loop");
+    let window = Arc::new(Window::new(&event_loop).expect("failed to create window"));
+    let surface = Surface::from_window(instance.clone(), window.clone());
 
     // setup device
     let physical_device = instance
@@ -262,10 +277,7 @@ fn main() {
         .expect("failed to draw")
         .end_render_pass(SubpassEndInfo::default())
         .expect("cannot end render pass")
-        .copy_image_to_buffer(CopyImageToBufferInfo::image_buffer(
-            image,
-            buf.clone(),
-        ))
+        .copy_image_to_buffer(CopyImageToBufferInfo::image_buffer(image, buf.clone()))
         .expect("failed to copy image to buffer");
     let command_buffer = builder.build().expect("failed to build command buffer");
 
@@ -279,10 +291,21 @@ fn main() {
 
     // get and save image
     let buffer_content = buf.read().expect("could not read buffer");
-    let image = ImageBuffer::<Rgba<u8>, _>::from_raw(1024, 1024, buffer_content).expect("could not create image from buffer");
+    let image = ImageBuffer::<Rgba<u8>, _>::from_raw(1024, 1024, buffer_content)
+        .expect("could not create image from buffer");
     image.save("image.png").expect("failed to save image");
 
-    println!("Done!");
+    event_loop.run(|event, _, control_flow| {
+        match event {
+            Event::WindowEvent {
+                event: WindowEvent::CloseRequested,
+                ..
+            } => {
+                *control_flow = ControlFlow::Exit;
+            },
+            _ => ()
+        }
+    });
 }
 
 mod shaders {
