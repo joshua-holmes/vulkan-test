@@ -33,7 +33,7 @@ use vulkano::{
 #[derive(BufferContents, VertexMacro)]
 #[repr(C)]
 pub struct Vertex {
-    #[format(R32G32B32_SFLOAT)]
+    #[format(R32G32_SFLOAT)]
     pub position: [f32; 2],
 }
 
@@ -132,7 +132,7 @@ fn main() {
             image_type: ImageType::Dim2d,
             format: Format::R8G8B8A8_UNORM,
             extent: [1024, 1024, 1],
-            usage: ImageUsage::TRANSFER_DST | ImageUsage::TRANSFER_SRC,
+            usage: ImageUsage::COLOR_ATTACHMENT | ImageUsage::TRANSFER_SRC,
             ..Default::default()
         },
         AllocationCreateInfo {
@@ -178,7 +178,7 @@ fn main() {
         depth_range: 0.0..=1.0,
     };
 
-    let _pipeline = {
+    let pipeline = {
         let vs = vs
             .entry_point("main")
             .expect("cannot find entry point for vertex shader");
@@ -226,7 +226,7 @@ fn main() {
                 ..GraphicsPipelineCreateInfo::layout(layout)
             },
         )
-        .expect("failed to create graphics pipeline");
+        .expect("failed to create graphics pipeline")
     };
 
     // create command buffer builder
@@ -245,7 +245,7 @@ fn main() {
     builder
         .begin_render_pass(
             RenderPassBeginInfo {
-                clear_values: vec![Some([0.0, 0.0, 1.0, 1.0].into())],
+                clear_values: vec![Some([0.0, 1.0, 0.0, 1.0].into())],
                 ..RenderPassBeginInfo::framebuffer(framebuffer.clone())
             },
             SubpassBeginInfo {
@@ -254,6 +254,12 @@ fn main() {
             },
         )
         .expect("cannot begin render pass")
+        .bind_pipeline_graphics(pipeline.clone())
+        .expect("cannot bind pipeline")
+        .bind_vertex_buffers(0, vertex_buffer.clone())
+        .expect("cannot bind vertex buffer")
+        .draw(3, 1, 0, 0)
+        .expect("failed to draw")
         .end_render_pass(SubpassEndInfo::default())
         .expect("cannot end render pass")
         .copy_image_to_buffer(CopyImageToBufferInfo::image_buffer(
