@@ -1,11 +1,12 @@
 use std::sync::Arc;
 
+use image::{ImageBuffer, Rgba};
 use vulkano::{
     buffer::{Buffer, BufferContents, BufferCreateInfo, BufferUsage},
     command_buffer::{
         allocator::{StandardCommandBufferAllocator, StandardCommandBufferAllocatorCreateInfo},
-        AutoCommandBufferBuilder, CommandBufferUsage, RenderPassBeginInfo, SubpassBeginInfo,
-        SubpassContents, SubpassEndInfo,
+        AutoCommandBufferBuilder, CommandBufferUsage, CopyImageToBufferInfo, RenderPassBeginInfo,
+        SubpassBeginInfo, SubpassContents, SubpassEndInfo,
     },
     device::{Device, DeviceCreateInfo, QueueCreateInfo, QueueFlags},
     format::Format,
@@ -23,10 +24,10 @@ use vulkano::{
             GraphicsPipelineCreateInfo,
         },
         layout::PipelineDescriptorSetLayoutCreateInfo,
-        PipelineLayout, PipelineShaderStageCreateInfo, GraphicsPipeline,
+        GraphicsPipeline, PipelineLayout, PipelineShaderStageCreateInfo,
     },
     render_pass::{Framebuffer, FramebufferCreateInfo, Subpass},
-    VulkanLibrary,
+    VulkanLibrary, sync::{self, GpuFuture},
 };
 
 #[derive(BufferContents, VertexMacro)]
@@ -152,34 +153,20 @@ fn main() {
     )
     .expect("failed to create framebuffer");
 
-    // create command buffer builder
-    let command_buffer_allocator = StandardCommandBufferAllocator::new(
-        device.clone(),
-        StandardCommandBufferAllocatorCreateInfo::default(),
-    );
-    let mut builder = AutoCommandBufferBuilder::primary(
-        &command_buffer_allocator,
-        queue.queue_family_index(),
-        CommandBufferUsage::OneTimeSubmit,
+    let buf = Buffer::from_iter(
+        memory_allocator.clone(),
+        BufferCreateInfo {
+            usage: BufferUsage::TRANSFER_DST,
+            ..Default::default()
+        },
+        AllocationCreateInfo {
+            memory_type_filter: MemoryTypeFilter::PREFER_HOST
+                | MemoryTypeFilter::HOST_RANDOM_ACCESS,
+            ..Default::default()
+        },
+        (0..1024 * 1024 * 4).map(|_| 0u8),
     )
-    .expect("could not build builder, ya know bob?");
-
-    // build
-    builder
-        .begin_render_pass(
-            RenderPassBeginInfo {
-                clear_values: vec![Some([0.0, 0.0, 1.0, 1.0].into())],
-                ..RenderPassBeginInfo::framebuffer(framebuffer.clone())
-            },
-            SubpassBeginInfo {
-                contents: SubpassContents::Inline,
-                ..Default::default()
-            },
-        )
-        .expect("cannot begin render pass")
-        .end_render_pass(SubpassEndInfo::default())
-        .expect("cannot end render pass");
-
+    .expect("failed to create buffer to return image to host");
     // load shaders
     let vs = shaders::load_vertex(device.clone()).expect("failed to load vertex shader");
     let fs = shaders::load_fragment(device.clone()).expect("failed to load fragment shader");
@@ -191,7 +178,7 @@ fn main() {
         depth_range: 0.0..=1.0,
     };
 
-    let pipeline = {
+    let _pipeline = {
         let vs = vs
             .entry_point("main")
             .expect("cannot find entry point for vertex shader");
@@ -241,6 +228,55 @@ fn main() {
         )
         .expect("failed to create graphics pipeline");
     };
+
+    // create command buffer builder
+    let command_buffer_allocator = StandardCommandBufferAllocator::new(
+        device.clone(),
+        StandardCommandBufferAllocatorCreateInfo::default(),
+    );
+    let mut builder = AutoCommandBufferBuilder::primary(
+        &command_buffer_allocator,
+        queue.queue_family_index(),
+        CommandBufferUsage::OneTimeSubmit,
+    )
+    .expect("could not build builder, ya know bob?");
+
+    // build
+    builder
+        .begin_render_pass(
+            RenderPassBeginInfo {
+                clear_values: vec![Some([0.0, 0.0, 1.0, 1.0].into())],
+                ..RenderPassBeginInfo::framebuffer(framebuffer.clone())
+            },
+            SubpassBeginInfo {
+                contents: SubpassContents::Inline,
+                ..Default::default()
+            },
+        )
+        .expect("cannot begin render pass")
+        .end_render_pass(SubpassEndInfo::default())
+        .expect("cannot end render pass")
+        .copy_image_to_buffer(CopyImageToBufferInfo::image_buffer(
+            image,
+            buf.clone(),
+        ))
+        .expect("failed to copy image to buffer");
+    let command_buffer = builder.build().expect("failed to build command buffer");
+
+    // execute
+    let future = sync::now(device.clone())
+        .then_execute(queue.clone(), command_buffer)
+        .expect("failed to execute")
+        .then_signal_fence_and_flush()
+        .expect("failed to signal fench and flush");
+    future.wait(None).unwrap();
+
+    // get and save image
+    let buffer_content = buf.read().expect("could not read buffer");
+    let image = ImageBuffer::<Rgba<u8>, _>::from_raw(1024, 1024, buffer_content).expect("could not create image from buffer");
+    image.save("image.png").expect("failed to save image");
+
+    println!("Done!");
 }
 
 mod shaders {
