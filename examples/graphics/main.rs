@@ -8,7 +8,7 @@ use vulkano::{
         AutoCommandBufferBuilder, CommandBufferUsage, CopyImageToBufferInfo, RenderPassBeginInfo,
         SubpassBeginInfo, SubpassContents, SubpassEndInfo,
     },
-    device::{Device, DeviceCreateInfo, QueueCreateInfo, QueueFlags},
+    device::{Device, DeviceCreateInfo, QueueCreateInfo, QueueFlags, DeviceExtensions, physical::PhysicalDeviceType},
     format::Format,
     image::{view::ImageView, Image, ImageCreateInfo, ImageType, ImageUsage},
     instance::{Instance, InstanceCreateInfo},
@@ -69,31 +69,40 @@ fn main() {
         },
     )
     .expect("failed to create instance");
-    let surface = Surface::from_window(instance.clone(), window.clone());
+    let surface = Surface::from_window(instance.clone(), window.clone()).expect("failed to create surface from window");
 
     // setup device
-    let physical_device = instance
+    let device_extensions = DeviceExtensions {
+        khr_swapchain: true,
+        ..Default::default()
+    };
+    let (physical_device, queue_family_index) = instance
         .enumerate_physical_devices()
         .expect("could not enumerate devices")
-        .next()
-        .expect("no devices available");
-    let queue_family_index = physical_device
-        .queue_family_properties()
-        .iter()
-        .enumerate()
-        .position(|(_i, queue_family_properties)| {
-            queue_family_properties
-                .queue_flags
-                .contains(QueueFlags::GRAPHICS)
+        .filter(|p| p.supported_extensions().contains(&device_extensions))
+        .filter_map(|p| {
+            p.queue_family_properties().iter().enumerate().position(|(i, q)| {
+                q.queue_flags.contains(QueueFlags::GRAPHICS)
+                && p.surface_support(i as u32, &surface).unwrap_or(false)
+            })
+            .map(|q| (p, q as u32))
         })
-        .expect("couldn't find a graphical queue fmaily") as u32;
+        .min_by_key(|(p, _)| match p.properties().device_type {
+            PhysicalDeviceType::DiscreteGpu   => 0,
+            PhysicalDeviceType::IntegratedGpu => 1,
+            PhysicalDeviceType::VirtualGpu    => 2,
+            PhysicalDeviceType::Cpu           => 3,
+            _                                 => 4,
+        })
+        .expect("no device available");
     let (device, mut queues) = Device::new(
-        physical_device,
+        physical_device.clone(),
         DeviceCreateInfo {
             queue_create_infos: vec![QueueCreateInfo {
                 queue_family_index,
                 ..Default::default()
             }],
+            enabled_extensions: device_extensions,
             ..Default::default()
         },
     )
