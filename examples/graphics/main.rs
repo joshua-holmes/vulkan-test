@@ -28,10 +28,9 @@ use vulkano::{
     },
     render_pass::{Framebuffer, FramebufferCreateInfo, Subpass},
     sync::{self, GpuFuture},
-    swpchain::Surface,
-    VulkanLibrary,
+    VulkanLibrary, swapchain::Surface,
 };
-use winit::{event_loop::{EventLoop, ControlFlow}, window::Window, event::{Event, WindowEvent}};
+use winit::{event_loop::EventLoop, window::Window, event::{Event, WindowEvent}};
 
 #[derive(BufferContents, VertexMacro)]
 #[repr(C)]
@@ -57,9 +56,11 @@ impl Triangle {
 }
 
 fn main() {
-    // setup vulkan
+    // setup vulkan and window
+    let event_loop = EventLoop::new();
     let library = VulkanLibrary::new().expect("no local Vulkan library/DLL");
     let required_extensions = Surface::required_extensions(&event_loop);
+    let window = Arc::new(Window::new(&event_loop).expect("failed to create window"));
     let instance = Instance::new(
         library,
         InstanceCreateInfo {
@@ -68,10 +69,6 @@ fn main() {
         },
     )
     .expect("failed to create instance");
-
-    // setup window
-    let event_loop = EventLoop::new().expect("unable to create event loop");
-    let window = Arc::new(Window::new(&event_loop).expect("failed to create window"));
     let surface = Surface::from_window(instance.clone(), window.clone());
 
     // setup device
@@ -295,13 +292,17 @@ fn main() {
         .expect("could not create image from buffer");
     image.save("image.png").expect("failed to save image");
 
+    // setup event loop
     event_loop.run(|event, _, control_flow| {
+        control_flow.set_poll();
+
         match event {
             Event::WindowEvent {
                 event: WindowEvent::CloseRequested,
                 ..
             } => {
-                *control_flow = ControlFlow::Exit;
+                println!("User requested window to be closed");
+                control_flow.set_exit();
             },
             _ => ()
         }
