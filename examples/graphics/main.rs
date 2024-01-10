@@ -170,7 +170,7 @@ fn main() {
         device.clone(),
         attachments: {
             clear_color: {
-                format: Format::R8G8B8A8_UNORM,
+                format: swapchain.image_format(),
                 samples: 1,
                 load_op: Clear,
                 store_op: Store,
@@ -202,14 +202,16 @@ fn main() {
 
     // create image view
     let view = ImageView::new_default(image.clone()).expect("failed to create image");
-    let framebuffer = Framebuffer::new(
-        render_pass.clone(),
-        FramebufferCreateInfo {
-            attachments: vec![view],
-            ..Default::default()
-        },
-    )
-    .expect("failed to create framebuffer");
+    let framebuffers = images.iter().map(|i| {
+        Framebuffer::new(
+            render_pass.clone(),
+            FramebufferCreateInfo {
+                attachments: vec![view],
+                ..Default::default()
+            },
+        )
+        .expect("failed to create framebuffer")
+    });
 
     let buf = Buffer::from_iter(
         memory_allocator.clone(),
@@ -287,42 +289,46 @@ fn main() {
         .expect("failed to create graphics pipeline")
     };
 
-    // create command buffer builder
+    // create command buffers
     let command_buffer_allocator = StandardCommandBufferAllocator::new(
         device.clone(),
         StandardCommandBufferAllocatorCreateInfo::default(),
     );
-    let mut builder = AutoCommandBufferBuilder::primary(
-        &command_buffer_allocator,
-        queue.queue_family_index(),
-        CommandBufferUsage::OneTimeSubmit,
-    )
-    .expect("could not build builder, ya know bob?");
-
-    // build
-    builder
-        .begin_render_pass(
-            RenderPassBeginInfo {
-                clear_values: vec![Some([0.0, 1.0, 0.0, 1.0].into())],
-                ..RenderPassBeginInfo::framebuffer(framebuffer.clone())
-            },
-            SubpassBeginInfo {
-                contents: SubpassContents::Inline,
-                ..Default::default()
-            },
+    let command_buffers = framebuffers.map(|framebuffer| {
+        let mut builder = AutoCommandBufferBuilder::primary(
+            &command_buffer_allocator,
+            queue.queue_family_index(),
+            CommandBufferUsage::OneTimeSubmit,
         )
-        .expect("cannot begin render pass")
-        .bind_pipeline_graphics(pipeline.clone())
-        .expect("cannot bind pipeline")
-        .bind_vertex_buffers(0, vertex_buffer.clone())
-        .expect("cannot bind vertex buffer")
-        .draw(3, 1, 0, 0)
-        .expect("failed to draw")
-        .end_render_pass(SubpassEndInfo::default())
-        .expect("cannot end render pass")
-        .copy_image_to_buffer(CopyImageToBufferInfo::image_buffer(image, buf.clone()))
-        .expect("failed to copy image to buffer");
-    let command_buffer = builder.build().expect("failed to build command buffer");
+        .expect("could not build builder, ya know bob?");
+
+        // build
+        builder
+            .begin_render_pass(
+                RenderPassBeginInfo {
+                    clear_values: vec![Some([0.0, 1.0, 0.0, 1.0].into())],
+                    ..RenderPassBeginInfo::framebuffer(framebuffer.clone())
+                },
+                SubpassBeginInfo {
+                    contents: SubpassContents::Inline,
+                    ..Default::default()
+                },
+            )
+            .expect("cannot begin render pass")
+            .bind_pipeline_graphics(pipeline.clone())
+            .expect("cannot bind pipeline")
+            .bind_vertex_buffers(0, vertex_buffer.clone())
+            .expect("cannot bind vertex buffer")
+            .draw(3, 1, 0, 0)
+            .expect("failed to draw")
+            .end_render_pass(SubpassEndInfo::default())
+            .expect("cannot end render pass")
+            .copy_image_to_buffer(CopyImageToBufferInfo::image_buffer(image, buf.clone()))
+            .expect("failed to copy image to buffer");
+
+        Arc::new(builder.build().unwrap())
+    })
+    .collect();
 
     // execute
     let future = sync::now(device.clone())
