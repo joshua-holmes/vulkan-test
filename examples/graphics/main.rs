@@ -129,6 +129,7 @@ fn main() {
     )
     .expect("failed to create vertex buffer");
 
+    // setup render pass
     let render_pass = vulkano::single_pass_renderpass!(
         device.clone(),
         attachments: {
