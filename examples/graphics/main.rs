@@ -8,7 +8,10 @@ use vulkano::{
         AutoCommandBufferBuilder, CommandBufferUsage, CopyImageToBufferInfo, RenderPassBeginInfo,
         SubpassBeginInfo, SubpassContents, SubpassEndInfo,
     },
-    device::{Device, DeviceCreateInfo, QueueCreateInfo, QueueFlags, DeviceExtensions, physical::PhysicalDeviceType},
+    device::{
+        physical::PhysicalDeviceType, Device, DeviceCreateInfo, DeviceExtensions, QueueCreateInfo,
+        QueueFlags,
+    },
     format::Format,
     image::{view::ImageView, Image, ImageCreateInfo, ImageType, ImageUsage},
     instance::{Instance, InstanceCreateInfo},
@@ -27,10 +30,15 @@ use vulkano::{
         GraphicsPipeline, PipelineLayout, PipelineShaderStageCreateInfo,
     },
     render_pass::{Framebuffer, FramebufferCreateInfo, Subpass},
+    swapchain::{Surface, Swapchain, SwapchainCreateInfo},
     sync::{self, GpuFuture},
-    VulkanLibrary, swapchain::Surface,
+    VulkanLibrary,
 };
-use winit::{event_loop::EventLoop, window::Window, event::{Event, WindowEvent}};
+use winit::{
+    event::{Event, WindowEvent},
+    event_loop::EventLoop,
+    window::Window,
+};
 
 #[derive(BufferContents, VertexMacro)]
 #[repr(C)]
@@ -69,7 +77,8 @@ fn main() {
         },
     )
     .expect("failed to create instance");
-    let surface = Surface::from_window(instance.clone(), window.clone()).expect("failed to create surface from window");
+    let surface = Surface::from_window(instance.clone(), window.clone())
+        .expect("failed to create surface from window");
 
     // setup device
     let device_extensions = DeviceExtensions {
@@ -81,18 +90,21 @@ fn main() {
         .expect("could not enumerate devices")
         .filter(|p| p.supported_extensions().contains(&device_extensions))
         .filter_map(|p| {
-            p.queue_family_properties().iter().enumerate().position(|(i, q)| {
-                q.queue_flags.contains(QueueFlags::GRAPHICS)
-                && p.surface_support(i as u32, &surface).unwrap_or(false)
-            })
-            .map(|q| (p, q as u32))
+            p.queue_family_properties()
+                .iter()
+                .enumerate()
+                .position(|(i, q)| {
+                    q.queue_flags.contains(QueueFlags::GRAPHICS)
+                        && p.surface_support(i as u32, &surface).unwrap_or(false)
+                })
+                .map(|q| (p, q as u32))
         })
         .min_by_key(|(p, _)| match p.properties().device_type {
-            PhysicalDeviceType::DiscreteGpu   => 0,
+            PhysicalDeviceType::DiscreteGpu => 0,
             PhysicalDeviceType::IntegratedGpu => 1,
-            PhysicalDeviceType::VirtualGpu    => 2,
-            PhysicalDeviceType::Cpu           => 3,
-            _                                 => 4,
+            PhysicalDeviceType::VirtualGpu => 2,
+            PhysicalDeviceType::Cpu => 3,
+            _ => 4,
         })
         .expect("no device available");
     let (device, mut queues) = Device::new(
@@ -109,6 +121,30 @@ fn main() {
     .expect("failed to create device");
     let queue = queues.next().unwrap();
     let memory_allocator = Arc::new(StandardMemoryAllocator::new_default(device.clone()));
+
+    // create swapchain
+    let capabilities = physical_device
+        .surface_capabilities(&surface, Default::default())
+        .expect("failed to get surface capabilities");
+    let dimensions = window.inner_size();
+    let composite_alpha = capabilities.supported_composite_alpha.into_iter().next().unwrap();
+    let image_format = physical_device
+        .surface_formats(&surface, Default::default())
+        .unwrap()[0]
+        .0;
+    let (mut swapchain, images) = Swapchain::new(
+        device.clone(),
+        surface.clone(),
+        SwapchainCreateInfo {
+            min_image_count: capabilities.min_image_count + 1,
+            image_format,
+            image_extent: dimensions.into(),
+            image_usage: ImageUsage::COLOR_ATTACHMENT,
+            composite_alpha,
+            ..Default::default()
+        }
+    )
+    .expect("failed to create swapchain");
 
     // setup a triangle
     let my_triangle = Triangle::new([-0.5, -0.5], [0.5, -0.25], [0., 0.5]);
@@ -313,8 +349,8 @@ fn main() {
             } => {
                 println!("User requested window to be closed");
                 control_flow.set_exit();
-            },
-            _ => ()
+            }
+            _ => (),
         }
     });
 }
