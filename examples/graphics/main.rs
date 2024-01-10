@@ -183,26 +183,9 @@ fn main() {
     )
     .expect("failed to instantiate render pass");
 
-    // create image
-    let image = Image::new(
-        memory_allocator.clone(),
-        ImageCreateInfo {
-            image_type: ImageType::Dim2d,
-            format: Format::R8G8B8A8_UNORM,
-            extent: [1024, 1024, 1],
-            usage: ImageUsage::COLOR_ATTACHMENT | ImageUsage::TRANSFER_SRC,
-            ..Default::default()
-        },
-        AllocationCreateInfo {
-            memory_type_filter: MemoryTypeFilter::PREFER_DEVICE,
-            ..Default::default()
-        },
-    )
-    .expect("could not create image");
-
     // create image view
-    let view = ImageView::new_default(image.clone()).expect("failed to create image");
     let framebuffers = images.iter().map(|i| {
+        let view = ImageView::new_default(i.clone()).expect("failed to create image");
         Framebuffer::new(
             render_pass.clone(),
             FramebufferCreateInfo {
@@ -319,30 +302,14 @@ fn main() {
             .expect("cannot bind pipeline")
             .bind_vertex_buffers(0, vertex_buffer.clone())
             .expect("cannot bind vertex buffer")
-            .draw(3, 1, 0, 0)
+            .draw(vertex_buffer.len() as u32, 1, 0, 0)
             .expect("failed to draw")
             .end_render_pass(SubpassEndInfo::default())
-            .expect("cannot end render pass")
-            .copy_image_to_buffer(CopyImageToBufferInfo::image_buffer(image, buf.clone()))
-            .expect("failed to copy image to buffer");
+            .expect("cannot end render pass");
 
-        Arc::new(builder.build().unwrap())
+        builder.build().unwrap()
     })
-    .collect();
-
-    // execute
-    let future = sync::now(device.clone())
-        .then_execute(queue.clone(), command_buffer)
-        .expect("failed to execute")
-        .then_signal_fence_and_flush()
-        .expect("failed to signal fench and flush");
-    future.wait(None).unwrap();
-
-    // get and save image
-    let buffer_content = buf.read().expect("could not read buffer");
-    let image = ImageBuffer::<Rgba<u8>, _>::from_raw(1024, 1024, buffer_content)
-        .expect("could not create image from buffer");
-    image.save("image.png").expect("failed to save image");
+    .collect::<Arc<_>>();
 
     // setup event loop
     event_loop.run(|event, _, control_flow| {
