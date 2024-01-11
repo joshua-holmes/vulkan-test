@@ -30,7 +30,7 @@ use vulkano::{
         GraphicsPipeline, PipelineLayout, PipelineShaderStageCreateInfo,
     },
     render_pass::{Framebuffer, FramebufferCreateInfo, Subpass},
-    swapchain::{Surface, Swapchain, SwapchainCreateInfo},
+    swapchain::{Surface, Swapchain, SwapchainCreateInfo, self, SwapchainPresentInfo},
     sync::{self, GpuFuture},
     VulkanLibrary,
 };
@@ -132,7 +132,7 @@ fn main() {
         .surface_formats(&surface, Default::default())
         .unwrap()[0]
         .0;
-    let (mut swapchain, images) = Swapchain::new(
+    let (mut my_swapchain, images) = Swapchain::new(
         device.clone(),
         surface.clone(),
         SwapchainCreateInfo {
@@ -147,7 +147,7 @@ fn main() {
     .expect("failed to create swapchain");
 
     // setup a triangle
-    let my_triangle = Triangle::new([-0.5, -0.5], [0.5, -0.25], [0., 0.5]);
+    let my_triangle = Triangle::new([-0.5, 0.1], [0.5, 0.1], [0., -1.]);
 
     // setup buffer
     let vertex_buffer = Buffer::from_iter(
@@ -170,7 +170,7 @@ fn main() {
         device.clone(),
         attachments: {
             clear_color: {
-                format: swapchain.image_format(),
+                format: my_swapchain.image_format(),
                 samples: 1,
                 load_op: Clear,
                 store_op: Store,
@@ -312,7 +312,7 @@ fn main() {
     .collect::<Arc<_>>();
 
     // setup event loop
-    event_loop.run(|event, _, control_flow| {
+    event_loop.run(move |event, _, control_flow| {
         control_flow.set_poll();
 
         match event {
@@ -323,7 +323,32 @@ fn main() {
                 println!("User requested window to be closed");
                 control_flow.set_exit();
             }
-            _ => (),
+            Event::MainEventsCleared => {
+                let (image_i, suboptimal, acquire_future) = 
+                    match swapchain::acquire_next_image(my_swapchain.clone(), None) {
+                        Ok(r) => r,
+                        Err(e) => panic!("failed to acquire next image: {}", e),
+                    };
+
+                if suboptimal {
+                    println!("WARNING: swapchain function is suboptimal");
+                }
+
+                let execution = sync::now(device.clone())
+                    .join(acquire_future)
+                    .then_execute(queue.clone(), command_buffers[image_i as usize].clone())
+                    .expect("failed to execute command buffer")
+                    .then_swapchain_present(queue.clone(), SwapchainPresentInfo::swapchain_image_index(my_swapchain.clone(), image_i))
+                    .then_signal_fence_and_flush();
+
+                match execution {
+                    Ok(future) => future.wait(None).unwrap(),
+                    Err(e) => println!("failed to flush future: {}", e),
+                }
+
+
+            }
+            _ => println!("Some weird event: {:?}", event),
         }
     });
 }
