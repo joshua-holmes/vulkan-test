@@ -1,17 +1,18 @@
 use std::sync::Arc;
 
 use vulkano::{
-    buffer::{Buffer, BufferContents, BufferCreateInfo, BufferUsage},
+    buffer::{Buffer, BufferContents, BufferCreateInfo, BufferUsage, Subbuffer},
     command_buffer::{
         allocator::{StandardCommandBufferAllocator, StandardCommandBufferAllocatorCreateInfo},
         AutoCommandBufferBuilder, CommandBufferUsage, RenderPassBeginInfo,
-        SubpassBeginInfo, SubpassContents, SubpassEndInfo,
+        SubpassBeginInfo, SubpassContents, SubpassEndInfo, PrimaryAutoCommandBuffer,
     },
     device::{
         physical::PhysicalDeviceType, Device, DeviceCreateInfo, DeviceExtensions, QueueCreateInfo,
         QueueFlags,
+        Queue,
     },
-    image::{view::ImageView, ImageUsage},
+    image::{view::ImageView, ImageUsage, Image},
     instance::{Instance, InstanceCreateInfo},
     memory::allocator::{AllocationCreateInfo, MemoryTypeFilter, StandardMemoryAllocator},
     pipeline::{
@@ -27,10 +28,10 @@ use vulkano::{
         layout::PipelineDescriptorSetLayoutCreateInfo,
         GraphicsPipeline, PipelineLayout, PipelineShaderStageCreateInfo,
     },
-    render_pass::{Framebuffer, FramebufferCreateInfo, Subpass},
+    render_pass::{Framebuffer, FramebufferCreateInfo, Subpass, RenderPass},
     swapchain::{Surface, Swapchain, SwapchainCreateInfo, self, SwapchainPresentInfo},
     sync::{self, GpuFuture, future::FenceSignalFuture},
-    VulkanLibrary,
+    VulkanLibrary, shader::ShaderModule,
 };
 use winit::{
     event::{Event, WindowEvent},
@@ -130,7 +131,7 @@ fn main() {
         .surface_formats(&surface, Default::default())
         .unwrap()[0]
         .0;
-    let (my_swapchain, images) = Swapchain::new(
+    let (mut my_swapchain, images) = Swapchain::new(
         device.clone(),
         surface.clone(),
         SwapchainCreateInfo {
@@ -182,123 +183,46 @@ fn main() {
     .expect("failed to instantiate render pass");
 
     // create image view
-    let framebuffers = images.iter().map(|i| {
-        let view = ImageView::new_default(i.clone()).expect("failed to create image");
-        Framebuffer::new(
-            render_pass.clone(),
-            FramebufferCreateInfo {
-                attachments: vec![view],
-                ..Default::default()
-            },
-        )
-        .expect("failed to create framebuffer")
-    });
+    let framebuffers = get_framebuffers(&images, render_pass.clone());
 
     // load shaders
     let vs = shaders::load_vertex(device.clone()).expect("failed to load vertex shader");
     let fs = shaders::load_fragment(device.clone()).expect("failed to load fragment shader");
 
     // setup viewport
-    let viewport = Viewport {
+    let mut viewport = Viewport {
         offset: [0.0, 0.0],
         extent: [1024.0, 1024.0],
         depth_range: 0.0..=1.0,
     };
 
-    let pipeline = {
-        let vs = vs
-            .entry_point("main")
-            .expect("cannot find entry point for vertex shader");
-        let fs = fs
-            .entry_point("main")
-            .expect("cannot find entry point for fragment shader");
-
-        let vertext_input_state = Vertex::per_vertex()
-            .definition(&vs.info().input_interface)
-            .expect("could not build vertext input state for provided interface");
-
-        let stages = [
-            PipelineShaderStageCreateInfo::new(vs),
-            PipelineShaderStageCreateInfo::new(fs),
-        ];
-
-        let layout = PipelineLayout::new(
-            device.clone(),
-            PipelineDescriptorSetLayoutCreateInfo::from_stages(&stages)
-                .into_pipeline_layout_create_info(device.clone())
-                .expect("failed to create pipeline descriptor set"),
-        )
-        .expect("failed to create pipeline layout");
-
-        let subpass = Subpass::from(render_pass.clone(), 0).expect("could not create subpass");
-
-        GraphicsPipeline::new(
-            device.clone(),
-            None,
-            GraphicsPipelineCreateInfo {
-                stages: stages.into_iter().collect(),
-                vertex_input_state: Some(vertext_input_state),
-                input_assembly_state: Some(InputAssemblyState::default()),
-                viewport_state: Some(ViewportState {
-                    viewports: [viewport].into_iter().collect(),
-                    ..Default::default()
-                }),
-                rasterization_state: Some(RasterizationState::default()),
-                multisample_state: Some(MultisampleState::default()),
-                color_blend_state: Some(ColorBlendState::with_attachment_states(
-                    subpass.num_color_attachments(),
-                    ColorBlendAttachmentState::default(),
-                )),
-                subpass: Some(subpass.into()),
-                ..GraphicsPipelineCreateInfo::layout(layout)
-            },
-        )
-        .expect("failed to create graphics pipeline")
-    };
+    let pipeline = get_pipeline(
+        device.clone(), 
+        vs.clone(), 
+        fs.clone(),
+        render_pass.clone(),
+        viewport.clone()
+    );
 
     // create command buffers
     let command_buffer_allocator = StandardCommandBufferAllocator::new(
         device.clone(),
         StandardCommandBufferAllocatorCreateInfo::default(),
     );
-    let command_buffers = framebuffers.map(|framebuffer| {
-        let mut builder = AutoCommandBufferBuilder::primary(
-            &command_buffer_allocator,
-            queue.queue_family_index(),
-            CommandBufferUsage::OneTimeSubmit,
-        )
-        .expect("could not build builder, ya know bob?");
-
-        // build
-        builder
-            .begin_render_pass(
-                RenderPassBeginInfo {
-                    clear_values: vec![Some([0.0, 1.0, 0.0, 1.0].into())],
-                    ..RenderPassBeginInfo::framebuffer(framebuffer.clone())
-                },
-                SubpassBeginInfo {
-                    contents: SubpassContents::Inline,
-                    ..Default::default()
-                },
-            )
-            .expect("cannot begin render pass")
-            .bind_pipeline_graphics(pipeline.clone())
-            .expect("cannot bind pipeline")
-            .bind_vertex_buffers(0, vertex_buffer.clone())
-            .expect("cannot bind vertex buffer")
-            .draw(vertex_buffer.len() as u32, 1, 0, 0)
-            .expect("failed to draw")
-            .end_render_pass(SubpassEndInfo::default())
-            .expect("cannot end render pass");
-
-        builder.build().unwrap()
-    })
-    .collect::<Arc<_>>();
+    let mut command_buffers = get_command_buffers(
+        &command_buffer_allocator,
+        &queue,
+        &pipeline,
+        &framebuffers,
+        &vertex_buffer
+    );
 
     // setup fences vector so CPU doesn't have to wait for GPU
     let frames_in_flight = images.len();
     let mut fences: Vec<Option<Arc<FenceSignalFuture<_>>>> = vec![None; frames_in_flight];
     let mut previous_fence_i = 0;
+    let mut recreate_swapchain = false;
+    let mut window_resized = false;
 
     // setup event loop
     event_loop.run(move |event, _, control_flow| {
@@ -313,6 +237,45 @@ fn main() {
                 control_flow.set_exit();
             }
             Event::MainEventsCleared => {
+                if recreate_swapchain || window_resized {
+                    println!("redo {} {}", recreate_swapchain, window_resized);
+                    recreate_swapchain = false;
+
+                    let new_dimensions = window.inner_size();
+
+                    let (new_swapchain, new_images) = my_swapchain
+                        .recreate(SwapchainCreateInfo {
+                            image_extent: new_dimensions.into(),
+                            ..my_swapchain.create_info()
+                        })
+                        .expect("failed to recreate swapchain");
+                    my_swapchain = new_swapchain;
+
+                    if window_resized {
+                        window_resized = false;
+
+                        let new_framebuffers = get_framebuffers(&new_images, render_pass.clone());
+
+                        viewport.extent = new_dimensions.into();
+
+                        let new_pipeline = get_pipeline(
+                            device.clone(), 
+                            vs.clone(), 
+                            fs.clone(),
+                            render_pass.clone(),
+                            viewport.clone()
+                        );
+
+                        command_buffers = get_command_buffers(
+                            &command_buffer_allocator,
+                            &queue,
+                            &new_pipeline,
+                            &new_framebuffers,
+                            &vertex_buffer,
+                        );
+                    }
+                }
+
                 let (image_i, suboptimal, acquire_future) = 
                     match swapchain::acquire_next_image(my_swapchain.clone(), None) {
                         Ok(r) => r,
@@ -356,9 +319,123 @@ fn main() {
 
                 previous_fence_i = image_i;
             }
-            _ => println!("Some weird event: {:?}", event),
+            _ => (),
         }
     });
+}
+
+fn get_framebuffers(images: &Vec<Arc<Image>>, render_pass: Arc<RenderPass>) -> Vec<Arc<Framebuffer>> {
+    images.iter().map(|i| {
+        let view = ImageView::new_default(i.clone()).expect("failed to create image");
+        Framebuffer::new(
+            render_pass.clone(),
+            FramebufferCreateInfo {
+                attachments: vec![view],
+                ..Default::default()
+            },
+        )
+        .expect("failed to create framebuffer")
+    })
+    .collect()
+}
+
+fn get_pipeline(
+    device: Arc<Device>,
+    vs: Arc<ShaderModule>,
+    fs: Arc<ShaderModule>,
+    render_pass: Arc<RenderPass>,
+    viewport: Viewport,
+) -> Arc<GraphicsPipeline> {
+    let vs = vs
+        .entry_point("main")
+        .expect("cannot find entry point for vertex shader");
+    let fs = fs
+        .entry_point("main")
+        .expect("cannot find entry point for fragment shader");
+
+    let vertext_input_state = Vertex::per_vertex()
+        .definition(&vs.info().input_interface)
+        .expect("could not build vertext input state for provided interface");
+
+    let stages = [
+        PipelineShaderStageCreateInfo::new(vs),
+        PipelineShaderStageCreateInfo::new(fs),
+    ];
+
+    let layout = PipelineLayout::new(
+        device.clone(),
+        PipelineDescriptorSetLayoutCreateInfo::from_stages(&stages)
+            .into_pipeline_layout_create_info(device.clone())
+            .expect("failed to create pipeline descriptor set"),
+    )
+    .expect("failed to create pipeline layout");
+
+    let subpass = Subpass::from(render_pass.clone(), 0).expect("could not create subpass");
+
+    GraphicsPipeline::new(
+        device.clone(),
+        None,
+        GraphicsPipelineCreateInfo {
+            stages: stages.into_iter().collect(),
+            vertex_input_state: Some(vertext_input_state),
+            input_assembly_state: Some(InputAssemblyState::default()),
+            viewport_state: Some(ViewportState {
+                viewports: [viewport].into_iter().collect(),
+                ..Default::default()
+            }),
+            rasterization_state: Some(RasterizationState::default()),
+            multisample_state: Some(MultisampleState::default()),
+            color_blend_state: Some(ColorBlendState::with_attachment_states(
+                subpass.num_color_attachments(),
+                ColorBlendAttachmentState::default(),
+            )),
+            subpass: Some(subpass.into()),
+            ..GraphicsPipelineCreateInfo::layout(layout)
+        },
+    )
+    .expect("failed to create graphics pipeline")
+}
+
+fn get_command_buffers(
+    command_buffer_allocator: &StandardCommandBufferAllocator,
+    queue: &Arc<Queue>,
+    pipeline: &Arc<GraphicsPipeline>,
+    framebuffers: &Vec<Arc<Framebuffer>>,
+    vertex_buffer: &Subbuffer<[Vertex]>,
+) -> Vec<Arc<PrimaryAutoCommandBuffer>> {
+    framebuffers.iter().map(|framebuffer| {
+        let mut builder = AutoCommandBufferBuilder::primary(
+            command_buffer_allocator,
+            queue.queue_family_index(),
+            CommandBufferUsage::OneTimeSubmit,
+        )
+        .expect("could not build builder, ya know bob?");
+
+        // build
+        builder
+            .begin_render_pass(
+                RenderPassBeginInfo {
+                    clear_values: vec![Some([0.0, 1.0, 0.0, 1.0].into())],
+                    ..RenderPassBeginInfo::framebuffer(framebuffer.clone())
+                },
+                SubpassBeginInfo {
+                    contents: SubpassContents::Inline,
+                    ..Default::default()
+                },
+            )
+            .expect("cannot begin render pass")
+            .bind_pipeline_graphics(pipeline.clone())
+            .expect("cannot bind pipeline")
+            .bind_vertex_buffers(0, vertex_buffer.clone())
+            .expect("cannot bind vertex buffer")
+            .draw(vertex_buffer.len() as u32, 1, 0, 0)
+            .expect("failed to draw")
+            .end_render_pass(SubpassEndInfo::default())
+            .expect("cannot end render pass");
+
+        builder.build().unwrap()
+    })
+    .collect()
 }
 
 mod shaders {
