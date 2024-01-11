@@ -1,19 +1,17 @@
 use std::sync::Arc;
 
-use image::{ImageBuffer, Rgba};
 use vulkano::{
     buffer::{Buffer, BufferContents, BufferCreateInfo, BufferUsage},
     command_buffer::{
         allocator::{StandardCommandBufferAllocator, StandardCommandBufferAllocatorCreateInfo},
-        AutoCommandBufferBuilder, CommandBufferUsage, CopyImageToBufferInfo, RenderPassBeginInfo,
+        AutoCommandBufferBuilder, CommandBufferUsage, RenderPassBeginInfo,
         SubpassBeginInfo, SubpassContents, SubpassEndInfo,
     },
     device::{
         physical::PhysicalDeviceType, Device, DeviceCreateInfo, DeviceExtensions, QueueCreateInfo,
         QueueFlags,
     },
-    format::Format,
-    image::{view::ImageView, Image, ImageCreateInfo, ImageType, ImageUsage},
+    image::{view::ImageView, ImageUsage},
     instance::{Instance, InstanceCreateInfo},
     memory::allocator::{AllocationCreateInfo, MemoryTypeFilter, StandardMemoryAllocator},
     pipeline::{
@@ -31,7 +29,7 @@ use vulkano::{
     },
     render_pass::{Framebuffer, FramebufferCreateInfo, Subpass},
     swapchain::{Surface, Swapchain, SwapchainCreateInfo, self, SwapchainPresentInfo},
-    sync::{self, GpuFuture},
+    sync::{self, GpuFuture, future::FenceSignalFuture},
     VulkanLibrary,
 };
 use winit::{
@@ -132,7 +130,7 @@ fn main() {
         .surface_formats(&surface, Default::default())
         .unwrap()[0]
         .0;
-    let (mut my_swapchain, images) = Swapchain::new(
+    let (my_swapchain, images) = Swapchain::new(
         device.clone(),
         surface.clone(),
         SwapchainCreateInfo {
@@ -196,20 +194,6 @@ fn main() {
         .expect("failed to create framebuffer")
     });
 
-    let buf = Buffer::from_iter(
-        memory_allocator.clone(),
-        BufferCreateInfo {
-            usage: BufferUsage::TRANSFER_DST,
-            ..Default::default()
-        },
-        AllocationCreateInfo {
-            memory_type_filter: MemoryTypeFilter::PREFER_HOST
-                | MemoryTypeFilter::HOST_RANDOM_ACCESS,
-            ..Default::default()
-        },
-        (0..1024 * 1024 * 4).map(|_| 0u8),
-    )
-    .expect("failed to create buffer to return image to host");
     // load shaders
     let vs = shaders::load_vertex(device.clone()).expect("failed to load vertex shader");
     let fs = shaders::load_fragment(device.clone()).expect("failed to load fragment shader");
@@ -311,6 +295,11 @@ fn main() {
     })
     .collect::<Arc<_>>();
 
+    // setup fences vector so CPU doesn't have to wait for GPU
+    let frames_in_flight = images.len();
+    let mut fences: Vec<Option<Arc<FenceSignalFuture<_>>>> = vec![None; frames_in_flight];
+    let mut previous_fence_i = 0;
+
     // setup event loop
     event_loop.run(move |event, _, control_flow| {
         control_flow.set_poll();
@@ -334,19 +323,38 @@ fn main() {
                     println!("WARNING: swapchain function is suboptimal");
                 }
 
-                let execution = sync::now(device.clone())
+                if let Some(image_fence) = &fences[image_i as usize] {
+                    image_fence.wait(None).unwrap();
+                }
+
+                let previous_future = match fences[previous_fence_i as usize].clone() {
+                    None => {
+                        let mut now = sync::now(device.clone());
+                        now.cleanup_finished();
+                        now.boxed()
+                    }
+                    Some(fence) => fence.boxed(),
+                };
+
+                let future = previous_future
                     .join(acquire_future)
                     .then_execute(queue.clone(), command_buffers[image_i as usize].clone())
                     .expect("failed to execute command buffer")
-                    .then_swapchain_present(queue.clone(), SwapchainPresentInfo::swapchain_image_index(my_swapchain.clone(), image_i))
+                    .then_swapchain_present(
+                        queue.clone(),
+                        SwapchainPresentInfo::swapchain_image_index(my_swapchain.clone(), image_i)
+                    )
                     .then_signal_fence_and_flush();
 
-                match execution {
-                    Ok(future) => future.wait(None).unwrap(),
-                    Err(e) => println!("failed to flush future: {}", e),
-                }
+                fences[image_i as usize] = match future {
+                    Ok(value) => Some(Arc::new(value)),
+                    Err(e) => {
+                        println!("failed to flush future: {}", e);
+                        None
+                    }
+                };
 
-
+                previous_fence_i = image_i;
             }
             _ => println!("Some weird event: {:?}", event),
         }
