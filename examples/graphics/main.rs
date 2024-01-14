@@ -64,6 +64,120 @@ impl Triangle {
     }
 }
 
+fn get_framebuffers(images: &Vec<Arc<Image>>, render_pass: Arc<RenderPass>) -> Vec<Arc<Framebuffer>> {
+    images.iter().map(|i| {
+        let view = ImageView::new_default(i.clone()).expect("failed to create image");
+        Framebuffer::new(
+            render_pass.clone(),
+            FramebufferCreateInfo {
+                attachments: vec![view],
+                ..Default::default()
+            },
+        )
+        .expect("failed to create framebuffer")
+    })
+    .collect()
+}
+
+fn get_pipeline(
+    device: Arc<Device>,
+    vs: Arc<ShaderModule>,
+    fs: Arc<ShaderModule>,
+    render_pass: Arc<RenderPass>,
+    viewport: Viewport,
+) -> Arc<GraphicsPipeline> {
+    let vs = vs
+        .entry_point("main")
+        .expect("cannot find entry point for vertex shader");
+    let fs = fs
+        .entry_point("main")
+        .expect("cannot find entry point for fragment shader");
+
+    let vertext_input_state = Vertex::per_vertex()
+        .definition(&vs.info().input_interface)
+        .expect("could not build vertext input state for provided interface");
+
+    let stages = [
+        PipelineShaderStageCreateInfo::new(vs),
+        PipelineShaderStageCreateInfo::new(fs),
+    ];
+
+    let layout = PipelineLayout::new(
+        device.clone(),
+        PipelineDescriptorSetLayoutCreateInfo::from_stages(&stages)
+            .into_pipeline_layout_create_info(device.clone())
+            .expect("failed to create pipeline descriptor set"),
+    )
+    .expect("failed to create pipeline layout");
+
+    let subpass = Subpass::from(render_pass.clone(), 0).expect("could not create subpass");
+
+    GraphicsPipeline::new(
+        device.clone(),
+        None,
+        GraphicsPipelineCreateInfo {
+            stages: stages.into_iter().collect(),
+            vertex_input_state: Some(vertext_input_state),
+            input_assembly_state: Some(InputAssemblyState::default()),
+            viewport_state: Some(ViewportState {
+                viewports: [viewport].into_iter().collect(),
+                ..Default::default()
+            }),
+            rasterization_state: Some(RasterizationState::default()),
+            multisample_state: Some(MultisampleState::default()),
+            color_blend_state: Some(ColorBlendState::with_attachment_states(
+                subpass.num_color_attachments(),
+                ColorBlendAttachmentState::default(),
+            )),
+            subpass: Some(subpass.into()),
+            ..GraphicsPipelineCreateInfo::layout(layout)
+        },
+    )
+    .expect("failed to create graphics pipeline")
+}
+
+fn get_command_buffers(
+    command_buffer_allocator: &StandardCommandBufferAllocator,
+    queue: &Arc<Queue>,
+    pipeline: &Arc<GraphicsPipeline>,
+    framebuffers: &Vec<Arc<Framebuffer>>,
+    vertex_buffer: &Subbuffer<[Vertex]>,
+) -> Vec<Arc<PrimaryAutoCommandBuffer>> {
+    framebuffers.iter().map(|framebuffer| {
+        let mut builder = AutoCommandBufferBuilder::primary(
+            command_buffer_allocator,
+            queue.queue_family_index(),
+            CommandBufferUsage::MultipleSubmit,
+        )
+        .expect("could not build builder, ya know bob?");
+
+        // build
+        builder
+            .begin_render_pass(
+                RenderPassBeginInfo {
+                    clear_values: vec![Some([0.0, 1.0, 0.0, 1.0].into())],
+                    ..RenderPassBeginInfo::framebuffer(framebuffer.clone())
+                },
+                SubpassBeginInfo {
+                    contents: SubpassContents::Inline,
+                    ..Default::default()
+                },
+            )
+            .expect("cannot begin render pass")
+            .bind_pipeline_graphics(pipeline.clone())
+            .expect("cannot bind pipeline")
+            .bind_vertex_buffers(0, vertex_buffer.clone())
+            .expect("cannot bind vertex buffer")
+            .draw(vertex_buffer.len() as u32, 1, 0, 0)
+            .expect("failed to draw")
+            .end_render_pass(SubpassEndInfo::default())
+            .expect("cannot end render pass");
+
+        builder.build().unwrap()
+    })
+    .collect()
+}
+
 fn main() {
     // setup vulkan and window
     let event_loop = EventLoop::new();
@@ -334,120 +448,6 @@ fn main() {
             _ => (),
         }
     });
-}
-
-fn get_framebuffers(images: &Vec<Arc<Image>>, render_pass: Arc<RenderPass>) -> Vec<Arc<Framebuffer>> {
-    images.iter().map(|i| {
-        let view = ImageView::new_default(i.clone()).expect("failed to create image");
-        Framebuffer::new(
-            render_pass.clone(),
-            FramebufferCreateInfo {
-                attachments: vec![view],
-                ..Default::default()
-            },
-        )
-        .expect("failed to create framebuffer")
-    })
-    .collect()
-}
-
-fn get_pipeline(
-    device: Arc<Device>,
-    vs: Arc<ShaderModule>,
-    fs: Arc<ShaderModule>,
-    render_pass: Arc<RenderPass>,
-    viewport: Viewport,
-) -> Arc<GraphicsPipeline> {
-    let vs = vs
-        .entry_point("main")
-        .expect("cannot find entry point for vertex shader");
-    let fs = fs
-        .entry_point("main")
-        .expect("cannot find entry point for fragment shader");
-
-    let vertext_input_state = Vertex::per_vertex()
-        .definition(&vs.info().input_interface)
-        .expect("could not build vertext input state for provided interface");
-
-    let stages = [
-        PipelineShaderStageCreateInfo::new(vs),
-        PipelineShaderStageCreateInfo::new(fs),
-    ];
-
-    let layout = PipelineLayout::new(
-        device.clone(),
-        PipelineDescriptorSetLayoutCreateInfo::from_stages(&stages)
-            .into_pipeline_layout_create_info(device.clone())
-            .expect("failed to create pipeline descriptor set"),
-    )
-    .expect("failed to create pipeline layout");
-
-    let subpass = Subpass::from(render_pass.clone(), 0).expect("could not create subpass");
-
-    GraphicsPipeline::new(
-        device.clone(),
-        None,
-        GraphicsPipelineCreateInfo {
-            stages: stages.into_iter().collect(),
-            vertex_input_state: Some(vertext_input_state),
-            input_assembly_state: Some(InputAssemblyState::default()),
-            viewport_state: Some(ViewportState {
-                viewports: [viewport].into_iter().collect(),
-                ..Default::default()
-            }),
-            rasterization_state: Some(RasterizationState::default()),
-            multisample_state: Some(MultisampleState::default()),
-            color_blend_state: Some(ColorBlendState::with_attachment_states(
-                subpass.num_color_attachments(),
-                ColorBlendAttachmentState::default(),
-            )),
-            subpass: Some(subpass.into()),
-            ..GraphicsPipelineCreateInfo::layout(layout)
-        },
-    )
-    .expect("failed to create graphics pipeline")
-}
-
-fn get_command_buffers(
-    command_buffer_allocator: &StandardCommandBufferAllocator,
-    queue: &Arc<Queue>,
-    pipeline: &Arc<GraphicsPipeline>,
-    framebuffers: &Vec<Arc<Framebuffer>>,
-    vertex_buffer: &Subbuffer<[Vertex]>,
-) -> Vec<Arc<PrimaryAutoCommandBuffer>> {
-    framebuffers.iter().map(|framebuffer| {
-        let mut builder = AutoCommandBufferBuilder::primary(
-            command_buffer_allocator,
-            queue.queue_family_index(),
-            CommandBufferUsage::MultipleSubmit,
-        )
-        .expect("could not build builder, ya know bob?");
-
-        // build
-        builder
-            .begin_render_pass(
-                RenderPassBeginInfo {
-                    clear_values: vec![Some([0.0, 1.0, 0.0, 1.0].into())],
-                    ..RenderPassBeginInfo::framebuffer(framebuffer.clone())
-                },
-                SubpassBeginInfo {
-                    contents: SubpassContents::Inline,
-                    ..Default::default()
-                },
-            )
-            .expect("cannot begin render pass")
-            .bind_pipeline_graphics(pipeline.clone())
-            .expect("cannot bind pipeline")
-            .bind_vertex_buffers(0, vertex_buffer.clone())
-            .expect("cannot bind vertex buffer")
-            .draw(vertex_buffer.len() as u32, 1, 0, 0)
-            .expect("failed to draw")
-            .end_render_pass(SubpassEndInfo::default())
-            .expect("cannot end render pass");
-
-        builder.build().unwrap()
-    })
-    .collect()
 }
 
 mod shaders {
