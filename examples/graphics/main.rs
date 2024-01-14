@@ -31,7 +31,9 @@ use vulkano::{
     render_pass::{Framebuffer, FramebufferCreateInfo, Subpass, RenderPass},
     swapchain::{Surface, Swapchain, SwapchainCreateInfo, self, SwapchainPresentInfo},
     sync::{self, GpuFuture, future::FenceSignalFuture},
-    VulkanLibrary, shader::ShaderModule,
+    VulkanError,
+    VulkanLibrary,
+    shader::ShaderModule, Validated,
 };
 use winit::{
     event::{Event, WindowEvent},
@@ -236,9 +238,14 @@ fn main() {
                 println!("User requested window to be closed");
                 control_flow.set_exit();
             }
+            Event::WindowEvent {
+                event: WindowEvent::Resized(_),
+                ..
+            } => {
+                window_resized = true;
+            }
             Event::MainEventsCleared => {
                 if recreate_swapchain || window_resized {
-                    println!("redo {} {}", recreate_swapchain, window_resized);
                     recreate_swapchain = false;
 
                     let new_dimensions = window.inner_size();
@@ -283,6 +290,7 @@ fn main() {
                     };
 
                 if suboptimal {
+                    recreate_swapchain = true;
                     println!("WARNING: swapchain function is suboptimal");
                 }
 
@@ -309,10 +317,14 @@ fn main() {
                     )
                     .then_signal_fence_and_flush();
 
-                fences[image_i as usize] = match future {
+                fences[image_i as usize] = match future.map_err(Validated::unwrap) {
                     Ok(value) => Some(Arc::new(value)),
+                    Err(VulkanError::OutOfDate) => {
+                        recreate_swapchain = true;
+                        None
+                    }
                     Err(e) => {
-                        println!("failed to flush future: {}", e);
+                        println!("failed to flush future from img '{}': {}", image_i, e);
                         None
                     }
                 };
@@ -407,7 +419,7 @@ fn get_command_buffers(
         let mut builder = AutoCommandBufferBuilder::primary(
             command_buffer_allocator,
             queue.queue_family_index(),
-            CommandBufferUsage::OneTimeSubmit,
+            CommandBufferUsage::MultipleSubmit,
         )
         .expect("could not build builder, ya know bob?");
 
