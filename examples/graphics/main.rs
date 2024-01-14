@@ -86,11 +86,9 @@ fn get_pipeline(
     render_pass: Arc<RenderPass>,
     viewport: Viewport,
 ) -> Arc<GraphicsPipeline> {
-    let vs = vs
-        .entry_point("main")
+    let vs = vs.entry_point("main")
         .expect("cannot find entry point for vertex shader");
-    let fs = fs
-        .entry_point("main")
+    let fs = fs.entry_point("main")
         .expect("cannot find entry point for fragment shader");
 
     let vertext_input_state = Vertex::per_vertex()
