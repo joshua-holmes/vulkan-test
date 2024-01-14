@@ -262,7 +262,7 @@ fn main() {
     .expect("failed to create swapchain");
 
     // setup a triangle
-    let my_triangle = Triangle::new([-0.5, 0.1], [0.5, 0.1], [0., -1.]);
+    let my_triangle = Triangle::new([-0.5, 0.5], [0.8, 0.1], [-0.2, -0.6]);
 
     // setup buffer
     let vertex_buffer = Buffer::from_iter(
